@@ -1,0 +1,212 @@
+# Custom string rules for executables, scripts and text files.
+# Each pattern is a literal string matched case-insensitively in ASCII and UTF-16LE,
+# unless `regex: true` (then it's a Python bytes regex applied to the ASCII view).
+# A hit is a reason to look closer, not proof. Each finding lists the file and the matched text.
+
+string_rules:
+  - id: stealer-browser-passwords
+    severity: high
+    title: Browser saved-password database path
+    patterns: ["\\Login Data", "/Login Data", "Login Data For Account", "logins.json", "key4.db"]
+  - id: stealer-browser-keys
+    severity: high
+    title: Browser master-key file (Local State) next to profile paths
+    patterns: ["\\User Data\\Local State", "\\Google\\Chrome\\User Data", "\\BraveSoftware\\Brave-Browser\\User Data",
+               "\\Microsoft\\Edge\\User Data", "\\Opera Software\\Opera Stable", "\\Mozilla\\Firefox\\Profiles"]
+  - id: stealer-browser-cookies
+    severity: high
+    title: Browser cookie database path
+    patterns: ["\\Network\\Cookies", "\\Default\\Cookies", "cookies.sqlite"]
+  - id: stealer-discord-tokens
+    severity: high
+    title: Discord token storage path
+    patterns: ["\\Discord\\Local Storage\\leveldb", "\\discord\\Local Storage\\leveldb", "discordcanary\\Local Storage",
+               "discordptb\\Local Storage"]
+  - id: stealer-crypto-wallets
+    severity: high
+    title: Crypto wallet extension or wallet folder
+    patterns: ["nkbihfbeogaeaoehlefnkodbefgpgknn",   # MetaMask
+               "bfnaelmomeimhlpmgjnjophhpkkoljpa",   # Phantom
+               "fhbohimaelbohpjbbldcngcnapndodjp",   # Binance wallet
+               "\\Exodus\\exodus.wallet", "\\Electrum\\wallets", "\\atomic\\Local Storage"]
+  - id: exfil-discord-webhook
+    severity: high
+    title: Discord webhook URL (common exfiltration channel)
+    patterns: ["discord.com/api/webhooks/", "discordapp.com/api/webhooks/"]
+  - id: exfil-telegram-bot
+    severity: high
+    title: Telegram bot API URL (common exfiltration channel)
+    patterns: ["api.telegram.org/bot"]
+  - id: api-cryptunprotectdata
+    severity: high
+    title: CryptUnprotectData (decrypts saved browser passwords)
+    patterns: ["CryptUnprotectData"]
+  - id: paste-site
+    severity: medium
+    title: Paste site URL (often used to fetch payloads)
+    patterns: ["pastebin.com/raw", "paste.ee/r/", "rentry.co/", "hastebin.com/raw"]
+  - id: powershell-download
+    severity: high
+    title: PowerShell download-and-run pattern
+    patterns: ["DownloadString(", "Invoke-Expression", "IEX(New-Object", "-EncodedCommand", "FromBase64String(",
+               "powershell -w hidden", "powershell.exe -w hidden", "-WindowStyle Hidden", "-ExecutionPolicy Bypass",
+               "powershell -enc ", "powershell.exe -enc ", "powershell -e ", "powershell.exe -e "]
+  - id: defender-exclusion
+    severity: high
+    title: Tries to add a Defender exclusion
+    patterns: ["Add-MpPreference", "ExclusionPath"]
+  - id: autostart-run-key
+    severity: medium
+    title: Autostart registry key
+    patterns: ["\\CurrentVersion\\Run"]
+
+# Engine runtime files: identical across games of the same engine version. They are hashed,
+# AV/YARA scanned and looked up once per unique hash (tier 3), but skipped by capa and string rules.
+engine_runtime_files:
+  - UnityPlayer.dll
+  - UnityCrashHandler64.exe
+  - UnityCrashHandler32.exe
+  - baselib.dll
+  - mono-2.0-bdwgc.dll
+  - mono-2.0-sgen.dll
+  - MonoPosixHelper.dll
+  - WinPixEventRuntime.dll
+  - crashpad_handler.exe
+  - libEGL.dll
+  - libGLESv2.dll
+  - ffmpeg.dll
+  - d3dcompiler_47.dll
+  - vk_swiftshader.dll
+  - vulkan-1.dll
+  - nw.dll
+  - nw_elf.dll
+  - node.dll
+  - notification_helper.exe
+  - SDL2.dll
+  - SDL3.dll
+  - OpenAL32.dll
+  - openal32.dll
+  - soft_oal.dll
+  - fmod.dll
+  - fmodstudio.dll
+  - fmodL.dll
+  - love.dll
+  - lua51.dll
+  - steam_api.dll
+  - steam_api64.dll
+  - galaxy64.dll
+  - discord_game_sdk.dll
+  - D3D12Core.dll
+  - d3d12SDKLayers.dll
+  - dxcompiler.dll
+  - dxil.dll
+  - libgcc_s_seh-1.dll
+  - libstdc++-6.dll
+  - libwinpthread-1.dll
+  - msvcp140.dll
+  - vcruntime140.dll
+  - vcruntime140_1.dll
+  - concrt140.dll
+  - ucrtbase.dll
+
+# A file NAMED like a runtime above is only treated leniently when it is really the vendor's file:
+# a valid Authenticode signature whose subject contains one of these names...
+# (matched against the certificate's Organisation field: the exact name, optionally followed only by
+# corporate suffixes such as Inc., Corp., ApS, LLC)
+trusted_runtime_signers:
+  - Unity Technologies
+  - Valve
+  - Microsoft
+  - Microsoft Corporation
+  - Epic Games
+  - CD PROJEKT
+  - GOG
+  - Discord
+  - Firelight Technologies
+  - Audiokinetic
+  - NVIDIA
+  - Advanced Micro Devices
+  - Intel
+  - Google
+  - LunarG
+  - GitHub
+  - OpenJS
+# ...or, for these unsigned Chromium/NW.js companions, sitting next to a detected Electron/NW.js runtime exe.
+unsigned_chromium_runtime:
+  - ffmpeg.dll
+  - libEGL.dll
+  - libGLESv2.dll
+  - vk_swiftshader.dll
+  - vulkan-1.dll
+  - nw.dll
+  - nw_elf.dll
+  - node.dll
+  - notification_helper.exe
+  - crashpad_handler.exe
+  - d3dcompiler_47.dll
+# (Glob matches below, Unity's managed framework assemblies, are unsigned by design and trusted by location;
+# they are still covered by antivirus, YARA and hash lookups.)
+
+# Path globs (relative, case-insensitive) that also count as engine runtime.
+engine_runtime_globs:
+  - "*/MonoBleedingEdge/*"
+  - "*_Data/Managed/UnityEngine*.dll"
+  - "*_Data/Managed/Unity.*.dll"
+  - "*_Data/Managed/System*.dll"
+  - "*_Data/Managed/Mono.*.dll"
+  - "*_Data/Managed/mscorlib.dll"
+  - "*_Data/Managed/netstandard.dll"
+  - "*_Data/Managed/Microsoft.*.dll"
+  - "*_Data/Plugins/*/lib_burst_generated.dll"
+  - "*/D3D12/*.dll"
+  - "*/api-ms-win-*.dll"
+
+# Helper executables engines ship next to the game. They don't count as "extra executables".
+helper_executables:
+  - UnityCrashHandler64.exe
+  - UnityCrashHandler32.exe
+  - crashpad_handler.exe
+  - notification_helper.exe
+  - dxwebsetup.exe
+  - vc_redist.x64.exe
+  - vc_redist.x86.exe
+  - CrashReportClient.exe
+  - UE4PrereqSetup_x64.exe
+  - UEPrereqSetup_x64.exe
+  - EpicWebHelper.exe
+  - python.exe
+  - pythonw.exe
+  - zsync.exe
+  - zsyncmake.exe
+
+# Windows system DLL names that malware ships next to a legitimate exe so it gets loaded instead
+# (DLL side-loading). Games don't ship these; a hit is High. Mods/wrappers like dinput8.dll or
+# d3d9.dll/dxgi.dll (ReShade, DXVK) are deliberately not listed.
+sideload_dll_names:
+  - version.dll
+  - winhttp.dll
+  - wininet.dll
+  - dbghelp.dll
+  - dbgcore.dll
+  - cryptsp.dll
+  - cryptbase.dll
+  - userenv.dll
+  - profapi.dll
+  - wtsapi32.dll
+  - secur32.dll
+  - sspicli.dll
+  - msimg32.dll
+  - uxtheme.dll
+  - dwmapi.dll
+  - iphlpapi.dll
+  - netapi32.dll
+  - winmm.dll
+  - mpr.dll
+  - propsys.dll
+  - wldp.dll
+  - amsi.dll
+  - credui.dll
+  - dpapi.dll
+  - samcli.dll
+  - wkscli.dll
+  - textshaping.dll

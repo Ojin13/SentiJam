@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jam Triage</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@webtui/css@0.1.10/dist/full.css">
+<style>
+  :root {
+    --bg: #030803; --fg: #39ff6a; --dim: #1f8f3d; --faint: #0d3a18; --line: #145a26;
+    --crit: #ff4d4d; --high: #ffb000; --med: #e8e05a; --low: #6dff9a; --info: #2f9e55;
+    --glow: 0 0 4px rgba(57, 255, 106, .55), 0 0 12px rgba(57, 255, 106, .18);
+    --background0: var(--bg); --foreground0: var(--fg); --foreground1: var(--dim); --background1: #071207;
+    --background2: #0a1a0c; --font-family: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); }
+  body {
+    font: 14px/1.45 var(--font-family); text-shadow: var(--glow); padding: 16px;
+    min-height: 100vh; overflow-x: hidden;
+  }
+  body::after { /* scanlines */
+    content: ""; pointer-events: none; position: fixed; inset: 0; z-index: 10;
+    background: repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0, rgba(0,0,0,0) 2px, rgba(0,0,0,.28) 3px);
+  }
+  body::before { /* soft vignette */
+    content: ""; pointer-events: none; position: fixed; inset: 0; z-index: 9;
+    background: radial-gradient(ellipse at center, rgba(0,0,0,0) 60%, rgba(0,0,0,.55) 100%);
+  }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(12, 1fr); max-width: 1280px; margin: 0 auto; }
+  .panel { grid-column: span 12; border: 1px solid var(--line); padding: 10px 12px 12px; position: relative; background: rgba(5, 20, 8, .55); min-width: 0; }
+  .panel > .label { position: absolute; top: -0.75em; left: 10px; background: var(--bg); padding: 0 6px; color: var(--dim); font-size: 12px; letter-spacing: .08em; }
+  @media (min-width: 900px) {
+    .span-4 { grid-column: span 4; } .span-6 { grid-column: span 6; } .span-8 { grid-column: span 8; }
+  }
+  header.bar { display: flex; flex-wrap: wrap; gap: 6px 20px; align-items: baseline; }
+  .title { font-weight: 700; letter-spacing: .12em; font-size: 16px; }
+  .state-running { color: var(--fg); } .state-done { color: var(--low); } .state-idle { color: var(--dim); }
+  .state-interrupted, .state-failed { color: var(--crit); }
+  .muted { color: var(--dim); }
+  .cursor { display: inline-block; width: .6em; background: var(--fg); animation: blink 1s steps(1) infinite; margin-left: 2px; }
+  .cursor::before { content: "\00a0"; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .bigbar { font-size: 18px; white-space: pre; overflow: hidden; text-overflow: clip; }
+  .stats { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-top: 6px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 14px; }
+  .num { font-variant-numeric: tabular-nums; text-align: right; }
+  .sev-critical, .v-disqualify { color: var(--crit); text-shadow: 0 0 6px rgba(255,77,77,.6); font-weight: 700; }
+  .sev-high, .v-review { color: var(--high); text-shadow: 0 0 6px rgba(255,176,0,.45); }
+  .sev-medium { color: var(--med); } .sev-low, .v-sandbox_ok { color: var(--low); } .sev-info, .v-web { color: #59c1ff; text-shadow: none; }
+  table { width: 100%; border-collapse: collapse; font-size: inherit; line-height: inherit; }
+  table th::before, table td::before, table th::after, table td::after { content: none !important; }
+  th, td { text-align: left; padding: 3px 8px 3px 0; vertical-align: top; border-bottom: 1px dashed var(--faint); }
+  th { color: var(--dim); font-weight: 400; }
+  td.wrap { word-break: break-word; }
+  .tablewrap { overflow-x: auto; }
+  .log { height: 22em; overflow-y: auto; white-space: pre-wrap; word-break: break-all; font-size: 12.5px; }
+  .meter { white-space: pre; }
+  .pass { color: var(--low); } .fail { color: var(--crit); } .skip { color: var(--high); }
+  a { color: inherit; }
+  .empty { color: var(--dim); font-style: italic; }
+  .sbrow { margin-bottom: 10px; }
+  .sbrow .meter { font-size: 15px; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin-bottom: 8px; }
+  .toolbar button { background: transparent; color: var(--dim); border: 1px solid var(--line); font: inherit; padding: 1px 8px; cursor: pointer; text-shadow: inherit; height: auto; display: inline-block; text-decoration: none; }
+  .toolbar button.on { color: var(--bg); background: var(--fg); text-shadow: none; }
+  .toolbar input { background: transparent; color: var(--fg); border: 1px solid var(--line); font: inherit; padding: 1px 6px; min-width: 0; flex: 1 1 140px; max-width: 260px; }
+  .legend { font-size: 12px; margin-top: 8px; }
+  td.c { white-space: nowrap; }
+  .steps { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; }
+  .steps .mark { white-space: pre; }
+  .st-done { color: var(--low); } .st-running { color: var(--high); } .st-pending { color: var(--dim); }
+  .st-skipped { color: var(--dim); text-decoration: line-through; text-decoration-color: var(--faint); }
+  .st-failed { color: var(--crit); }
+  .steps .detail { color: var(--dim); font-size: 12.5px; }
+  .st-running .blink { animation: blink 1s steps(1) infinite; }
+  td.src { text-align: center; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="grid">
+  <section class="panel">
+    <header class="bar">
+      <span class="title">JAM-TRIAGE // <span id="state">CONNECTING</span><span class="cursor"></span></span>
+      <span class="muted">elapsed <span id="elapsed">-</span></span>
+      <span class="muted">eta <span id="eta">-</span></span>
+      <span>now: <span id="current">-</span></span>
+    </header>
+  </section>
+
+  <section class="panel">
+    <span class="label">RUN STEPS</span>
+    <div class="steps" id="steps"><span class="empty">no run yet</span></div>
+  </section>
+
+  <section class="panel span-8">
+    <span class="label">STATIC ANALYSIS</span>
+    <div class="bigbar" id="bar">[░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 0/0</div>
+    <div class="stats">
+      <span>done <b id="n-done">0</b></span><span>in progress <b id="n-prog">0</b></span>
+      <span>queued <b id="n-queued">0</b></span><span>errors <b id="n-err">0</b></span>
+      <span class="skip" id="prov-wrap">waiting for ClamAV / lookups <b id="n-prov">0</b></span>
+    </div>
+  </section>
+
+  <section class="panel span-4">
+    <span class="label">SELF-TEST</span>
+    <div id="selftest" class="empty">not run in this data folder</div>
+  </section>
+
+  <section class="panel span-6">
+    <span class="label">THREAT BOARD</span>
+    <div class="kv" id="threats"></div>
+  </section>
+
+  <section class="panel span-6">
+    <span class="label">QUOTA</span>
+    <div id="quota"></div>
+  </section>
+
+  <section class="panel">
+    <span class="label">SANDBOX // DYNAMIC (OPT-IN)</span>
+    <div id="sandbox"></div>
+    <div class="muted legend">Runs only with <b>triage analyze --sandbox</b> or <b>triage sandbox upload|collect</b>.
+      █ result in · ▒ submitted, waiting for the sandbox · ░ not submitted yet · skipped = no consent / no executable / too big</div>
+  </section>
+
+  <section class="panel">
+    <span class="label">ENTRIES // ALL CHECKS</span>
+    <div class="toolbar">
+      <button data-f="all" class="on">all</button><button data-f="flagged">flagged</button>
+      <button data-f="sandbox">sandbox flagged</button><button data-f="running">sandbox running</button>
+      <input id="filter" type="search" placeholder="filter entry…" aria-label="filter entries">
+      <span class="muted" id="shown"></span>
+    </div>
+    <div class="tablewrap">
+      <table divide-="none">
+        <thead><tr><th>entry</th><th>static</th><th>hash lookups</th><th>VT sandbox</th><th>HA sandbox</th><th>sources</th><th>verdict</th><th></th></tr></thead>
+        <tbody id="entries"></tbody>
+      </table>
+    </div>
+    <div class="muted legend">Each column = worst finding from that layer (×N = findings at Medium or above).
+      Verdict combines every column: any Critical → Disqualify; any High or 3+ Medium → Review. A clean column never cancels a flagged one.
+      <b>sources</b> = how many independent tools flagged it at Medium or above (hover for names); more sources = stronger agreement.</div>
+  </section>
+
+  <section class="panel">
+    <span class="label">LIVE LOG</span>
+    <div class="log" id="log"></div>
+  </section>
+</div>
+
+<script>
+"use strict";
+// Every string below may come from an untrusted submission (file names, analyser output).
+// It is only ever rendered with textContent; never innerHTML.
+const $ = (id) => document.getElementById(id);
+const el = (tag, text, cls) => { const e = document.createElement(tag); if (text !== undefined) e.textContent = String(text); if (cls) e.className = cls; return e; };
+const clear = (node) => { while (node.firstChild) node.removeChild(node.firstChild); };
+const fmt = (s) => { if (s === null || s === undefined) return "-"; s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60; return (h ? h + "h " : "") + (h || m ? m + "m " : "") + x + "s"; };
+const asciiBar = (done, total, width) => { const f = total ? Math.round(done / total * width) : 0; return "[" + "█".repeat(f) + "░".repeat(width - f) + "] " + done + "/" + total; };
+const safeClass = (s) => String(s || "").toLowerCase().replace(/[^a-z_]/g, "");
+
+let refresh = 2000, countdowns = {}, last = null, mode = "all";
+const SEV_RANK = { critical: 4, high: 3, medium: 2, low: 1 };
+
+function layerCell(l, status) {
+  if (status === "queued" || status === "in_progress" || status === "reused") return el("td", status.replace("_", " "), "c muted");
+  if (!l || !l.worst) return el("td", "clean", "c pass");
+  return el("td", l.worst.toUpperCase() + (l.flags ? " ×" + l.flags : ""), "c sev-" + safeClass(l.worst));
+}
+
+function lookupCell(l, status) {
+  const td = layerCell(l, status);
+  if (status === "provisional" && (!l || !l.worst)) { td.textContent = "pending"; td.className = "c skip"; }
+  else if (l && l.state === "off") { td.textContent = "off"; td.className = "c muted"; td.title = "no lookup service enabled (API keys in .env)"; }
+  else if (l && l.state === "none") { td.textContent = "-"; td.className = "c muted"; td.title = "no file worth looking up"; }
+  return td;
+}
+
+function sandboxCell(sb, enabled) {
+  sb = sb || {};
+  const st = sb.status || "not_started";
+  let td;
+  if (st === "not_started") td = el("td", enabled ? "·" : "off", "c muted");
+  else if (st === "running") td = el("td", "running" + (sb.attempts ? " (" + sb.attempts + " checks)" : ""), "c skip");
+  else if (st === "collected") td = sb.worst ? el("td", sb.worst.toUpperCase() + (sb.flags ? " ×" + sb.flags : ""), "c sev-" + safeClass(sb.worst)) : el("td", "clean", "c pass");
+  else if (st === "no_report") td = el("td", "no report", "c muted");
+  else if (st === "skipped") td = el("td", "skipped", "c muted");
+  else td = el("td", "error", "c fail");
+  if (sb.threat_score !== null && sb.threat_score !== undefined && st === "collected") td.textContent += " · score " + sb.threat_score;
+  if (sb.detail) td.title = String(sb.detail);
+  return td;
+}
+
+function keep(r) {
+  const q = $("filter").value.trim().toLowerCase();
+  if (q && !String(r.entry).toLowerCase().includes(q)) return false;
+  const sbFlag = [r.virustotal, r.hybrid].some((x) => x && x.status === "collected" && (SEV_RANK[x.worst] || 0) >= 2);
+  if (mode === "flagged") return r.verdict === "Review" || r.verdict === "Disqualify";
+  if (mode === "sandbox") return sbFlag;
+  if (mode === "running") return [r.virustotal, r.hybrid].some((x) => x && x.status === "running");
+  return true;
+}
+
+function renderEntries(s) {
+  const tb = $("entries"); clear(tb);
+  const rows = (s.table || []).filter(keep);
+  const sb = s.sandbox || {};
+  $("shown").textContent = rows.length + " / " + (s.table || []).length;
+  if (!rows.length) { const tr = el("tr"); const td = el("td", "no entries", "empty"); td.colSpan = 8; tr.appendChild(td); tb.appendChild(tr); }
+  for (const r of rows) {
+    const tr = el("tr");
+    tr.appendChild(el("td", r.entry, "wrap"));
+    tr.appendChild(layerCell(r.static, r.status));
+    tr.appendChild(lookupCell(r.lookups, r.status));
+    tr.appendChild(sandboxCell(r.virustotal, (sb.virustotal || {}).enabled));
+    tr.appendChild(sandboxCell(r.hybrid, (sb.hybrid || {}).enabled));
+    const src = r.sources || [];
+    const sc = el("td", src.length, "c src " + (src.length >= 3 ? "sev-critical" : src.length === 2 ? "sev-high" : src.length ? "sev-medium" : "muted"));
+    sc.title = src.join(", ") || "no source flagged this entry";
+    tr.appendChild(sc);
+    tr.appendChild(el("td", (r.verdict || "-") + (r.status === "provisional" ? " (prov.)" : ""), "c v-" + safeClass(String(r.verdict).replace(" ", "_"))));
+    const td = el("td"); const a = el("a", "report"); a.href = "/report#e-" + encodeURIComponent(r.entry); td.appendChild(a); tr.appendChild(td);
+    tb.appendChild(tr);
+  }
+}
+
+function renderSteps(s) {
+  const box = $("steps"); clear(box);
+  const steps = s.steps || [];
+  if (!steps.length) { box.appendChild(el("span", "no run yet", "empty")); return; }
+  const marks = { done: "[✓]", running: "[▶]", pending: "[ ]", skipped: "[–]", failed: "[✗]" };
+  const words = { done: "done", running: "running", pending: "to do", skipped: "skipped", failed: "failed" };
+  steps.forEach((st, i) => {
+    const cls = "st-" + safeClass(st.state);
+    const m = el("span", undefined, "mark " + cls);
+    m.appendChild(el("span", marks[st.state] || "[?]", st.state === "running" ? "blink" : ""));
+    m.appendChild(el("span", " " + (i + 1) + "."));
+    box.appendChild(m);
+    const right = el("div", undefined, cls);
+    right.appendChild(el("span", st.title + "  "));
+    right.appendChild(el("b", (words[st.state] || st.state).toUpperCase()));
+    if (st.detail) right.appendChild(el("div", st.detail, "detail"));
+    box.appendChild(right);
+  });
+}
+
+function renderSandbox(s) {
+  const box = $("sandbox"); clear(box);
+  for (const p of Object.values(s.sandbox || {})) {
+    const row = el("div", undefined, "sbrow");
+    const name = String(p.name || "").padEnd(16);
+    if (!p.enabled) { row.appendChild(el("div", name + "off (API key not set)", "meter muted")); box.appendChild(row); continue; }
+    const total = p.total || 0, w = window.innerWidth < 600 ? 16 : 40;
+    const finished = (p.collected || 0) + (p.no_report || 0) + (p.skipped || 0) + (p.error || 0);
+    const fDone = total ? Math.round(finished / total * w) : 0;
+    const fRun = total ? Math.min(w - fDone, Math.round((p.running || 0) / total * w)) : 0;
+    row.appendChild(el("div", name + "[" + "█".repeat(fDone) + "▒".repeat(fRun) + "░".repeat(w - fDone - fRun) + "] " + finished + "/" + total, "meter"));
+    const st = el("div", undefined, "stats");
+    const parts = [["results in", p.collected, ""], ["running", p.running, "skip"], ["not submitted", p.not_started, "muted"],
+                   ["no report", p.no_report, "muted"], ["skipped", p.skipped, "muted"], ["errors", p.error, p.error ? "fail" : "muted"],
+                   ["flagged by sandbox", p.flagged, p.flagged ? "sev-high" : "muted"]];
+    for (const [label, n, cls] of parts) { const sp = el("span", label + " ", cls); sp.appendChild(el("b", n || 0)); st.appendChild(sp); }
+    row.appendChild(st);
+    box.appendChild(row);
+  }
+}
+
+function render(s) {
+  const st = String(s.state || "idle");
+  $("state").textContent = st.toUpperCase();
+  $("state").className = "state-" + safeClass(st);
+  $("elapsed").textContent = fmt(s.elapsed_seconds);
+  $("eta").textContent = fmt(s.eta_seconds);
+  const cur = s.current || {};
+  $("current").textContent = [cur.entry, cur.stage].filter(Boolean).join(" :: ") || "-";
+
+  const e = s.entries || {};
+  const width = window.innerWidth < 600 ? 16 : 30;
+  $("bar").textContent = asciiBar(e.done || 0, e.total || 0, width);
+  $("n-done").textContent = e.done || 0; $("n-prog").textContent = e.in_progress || 0;
+  $("n-queued").textContent = e.queued || 0; $("n-err").textContent = e.errors || 0;
+
+  const t = $("threats"); clear(t);
+  for (const sev of ["critical", "high", "medium", "low"]) {
+    t.appendChild(el("span", sev.toUpperCase(), "sev-" + sev));
+    t.appendChild(el("span", (s.findings || {})[sev] || 0, "num sev-" + sev));
+  }
+  t.appendChild(el("span", " ")); t.appendChild(el("span", " "));
+  const vnames = { disqualify: "DISQUALIFY", review: "REVIEW", sandbox_ok: "SANDBOX OK", web: "WEB" };
+  for (const v of ["disqualify", "review", "sandbox_ok", "web"]) {
+    t.appendChild(el("span", vnames[v], "v-" + v));
+    t.appendChild(el("span", (s.verdicts || {})[v] || 0, "num v-" + v));
+  }
+
+  const q = $("quota"); clear(q); countdowns = {};
+  for (const [svc, info] of Object.entries(s.quota || {})) {
+    const row = el("div", undefined, "meter");
+    if (!info.enabled) { row.appendChild(el("span", svc.padEnd(17) + " off", "muted")); q.appendChild(row); continue; }
+    let text = svc.padEnd(17);
+    if (info.budget) {
+      const w = 20, f = Math.min(w, Math.round((info.used_today / info.budget) * w));
+      text += "[" + "▮".repeat(f) + "·".repeat(w - f) + "] " + info.used_today + "/" + info.budget;
+    } else {
+      text += "used today " + info.used_today;
+    }
+    row.appendChild(el("span", text));
+    const extra = el("div", undefined, "muted");
+    const cd = el("span", "");
+    countdowns[svc] = { node: cd, at: Date.now() + (info.next_request_in || 0) * 1000 };
+    extra.appendChild(el("span", "  pending " + info.pending + (info.paused ? "  PAUSED" : "") + "  next in "));
+    extra.appendChild(cd);
+    q.appendChild(row); q.appendChild(extra);
+  }
+  tick();
+
+  last = s;
+  renderSteps(s);
+  const prov = e.provisional || 0;
+  $("n-prov").textContent = prov; $("prov-wrap").style.display = prov && st === "running" ? "" : "none";
+  const running = (s.steps || []).find((x) => x.state === "running");
+  if (st === "running" && running) $("state").textContent = "RUNNING · STEP " + ((s.steps || []).indexOf(running) + 1) + "/" + s.steps.length;
+  renderSandbox(s);
+  renderEntries(s);
+
+  const log = $("log"); const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+  clear(log);
+  for (const line of s.log || []) log.appendChild(el("div", line));
+  if (atBottom) log.scrollTop = log.scrollHeight;
+
+  const stBox = $("selftest"); clear(stBox);
+  if (s.selftest && s.selftest.results) {
+    stBox.className = "";
+    const head = el("div", (s.selftest.passed ? "PASS" : "FAIL") + "  " + (s.selftest.when || ""), s.selftest.passed ? "pass" : "fail");
+    stBox.appendChild(head);
+    for (const r of s.selftest.results) stBox.appendChild(el("div", (r.status.toUpperCase() + "    ").slice(0, 5) + r.fixture + (r.note ? "  " + r.note : ""), safeClass(r.status)));
+  } else { stBox.className = "empty"; stBox.textContent = "not run in this data folder"; }
+
+  if (s.refresh_seconds) refresh = s.refresh_seconds * 1000;
+}
+
+function tick() {
+  for (const c of Object.values(countdowns)) c.node.textContent = Math.max(0, Math.ceil((c.at - Date.now()) / 1000)) + "s";
+}
+setInterval(tick, 500);
+for (const b of document.querySelectorAll(".toolbar button")) {
+  b.addEventListener("click", () => {
+    mode = b.dataset.f;
+    for (const x of document.querySelectorAll(".toolbar button")) x.classList.toggle("on", x === b);
+    if (last) renderEntries(last);
+  });
+}
+$("filter").addEventListener("input", () => { if (last) renderEntries(last); });
+
+async function poll() {
+  try {
+    const r = await fetch("/api/status", { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    render(await r.json());
+  } catch (err) {
+    $("state").textContent = "OFFLINE"; $("state").className = "state-failed";
+  }
+  setTimeout(poll, refresh);
+}
+poll();
+</script>
+</body>
+</html>

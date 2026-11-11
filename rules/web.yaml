@@ -1,0 +1,90 @@
+# Static web build checks for .html/.htm/.js files in HTML5 builds. Nothing is ever opened in a browser.
+# Patterns are Python regular expressions (case-insensitive). One finding per rule per file,
+# with the first matching line and a count.
+
+rules:
+  - id: download-push
+    severity: high
+    title: Pushes a download of an executable or archive
+    applies: [html, js]
+    pattern: '(href|src|location(\.href)?\s*=|window\.open\s*\()\s*=?\s*["''][^"'']+\.(exe|msi|zip|scr|apk|bat|dmg)(\?[^"'']*)?["'']|<a\b[^>]*\bdownload\b|application/x-msdownload|application/vnd\.microsoft\.portable-executable'
+  - id: phishing-password
+    severity: high
+    title: Password field (possible phishing form)
+    applies: [html, js]
+    pattern: '<input\b[^>]*type\s*=\s*["'']?password|\.type\s*=\s*["'']password["'']'
+  - id: phishing-login-text
+    severity: high
+    title: Asks for an itch.io, Discord, Steam or Google login
+    applies: [html]
+    pattern: '(log\s*in|sign\s*in|enter)\s+(with\s+|to\s+)?(your\s+)?(itch\.io|discord|steam|google)\s+(account|password|credentials|login)'
+  - id: crypto-miner
+    severity: high
+    title: Crypto-mining code
+    applies: [html, js]
+    pattern: '\b(coinhive|cryptonight|xmrig|coin-hive|cryptoloot|webminepool|minero\.cc)\b|stratum\+(tcp|ssl)://'
+  - id: redirect-external
+    severity: medium
+    title: Redirects away from the game to an outside domain
+    applies: [html, js]
+    pattern: '((window|top|self|document|parent)\.location(\.href)?\s*=|location\.(replace|assign)\s*\(|window\.open\s*\(|http-equiv\s*=\s*["'']?refresh[^>]*url\s*=)\s*["'']?\s*(https?:)?//(?P<domain>[A-Za-z0-9.-]+)'
+    external_only: true
+  - id: permissions
+    severity: medium
+    title: Asks for browser permissions (camera, microphone, location, notifications, clipboard)
+    applies: [html, js]
+    pattern: '\bgetUserMedia\b|\bgeolocation\.(getCurrentPosition|watchPosition)\b|Notification\.requestPermission|clipboard\.(readText|read)\s*\('
+  - id: hidden-code
+    severity: medium
+    title: Hidden code (eval of base64 or fetched text)
+    applies: [html, js]
+    pattern: '\beval\s*\(\s*(window\.)?atob\s*\(|new\s+Function\s*\(\s*(window\.)?atob\s*\(|new\s+Function\s*\(\s*["''][A-Za-z0-9+/=]{200,}|\.text\(\)\s*\)?\s*\.then\s*\(\s*\w*\s*=>\s*eval\b'
+
+# External code loads: <script src>, import(), fetch(), WebSocket.
+external_code_pattern: '<script\b[^>]*\bsrc\s*=\s*["''](https?:)?//(?P<d1>[A-Za-z0-9.-]+)|\bimport\s*\(\s*["'']https?://(?P<d2>[A-Za-z0-9.-]+)|\bfetch\s*\(\s*["'']https?://(?P<d3>[A-Za-z0-9.-]+)|new\s+WebSocket\s*\(\s*["'']wss?://(?P<d4>[A-Za-z0-9.-]+)'
+
+# Domains that are part of itch.io itself: ignored.
+itch_domains: [itch.io, itch.zone, hwcdn.net, itchio-mirror.com]
+
+# Well-known CDNs: external code from these is Low.
+cdn_domains: [cdnjs.cloudflare.com, cdn.jsdelivr.net, unpkg.com, ajax.googleapis.com, fonts.googleapis.com,
+              fonts.gstatic.com, www.gstatic.com, code.jquery.com, cdn.babylonjs.com, cdn.skypack.dev,
+              esm.sh, threejs.org, pixijs.download, cdn.tailwindcss.com, stackpath.bootstrapcdn.com,
+              maxcdn.bootstrapcdn.com, use.fontawesome.com, kit.fontawesome.com]
+
+# Leaderboard / analytics / ads services: listed in the report, not flagged.
+known_services: [google-analytics.com, www.google-analytics.com, googletagmanager.com, www.googletagmanager.com,
+                 gameanalytics.com, api.gameanalytics.com, playfabapi.com, firebaseio.com, firebaseapp.com,
+                 googleapis.com, newgrounds.com, gamejolt.com, api.gamejolt.com, kongregate.com, poki.com,
+                 crazygames.com, lootlocker.io, api.lootlocker.io, supabase.co, playroomkit.com, dreamlo.com]
+
+# Engine loader files: recorded by hash instead of being scanned line by line.
+engine_loader_globs:
+  - "*.framework.js"
+  - "*.framework.js.gz"
+  - "*.framework.js.br"
+  - "*.loader.js"
+  - "UnityLoader.js"
+  - "godot.js"
+  - "godot.*.js"
+  - "*.audio.worklet.js"
+  - "*.worker.js"
+  - "c3runtime.js"
+  - "c2runtime.js"
+  - "scripts/c3main.js"
+  - "html5game/*.js"
+  - "phaser*.js"
+  - "pixi*.js"
+  - "three*.js"
+  - "babylon*.js"
+  - "*.min.js"
+  - "js/rmmz_*.js"
+  - "js/rpg_*.js"
+  - "js/libs/*.js"
+  - "gdjs/*.js"
+  - "pixi-renderers/*.js"
+  - "lib/howler*.js"
+
+# Files bigger than this are treated as engine/minified bundles: hashed, not scanned line by line,
+# unless they are the build's own index.html.
+max_scan_bytes: 3000000

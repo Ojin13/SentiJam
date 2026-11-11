@@ -1,0 +1,342 @@
+# Per-language rules for recovered (decompiled / extracted) game code and loose source files.
+# Patterns are Python regular expressions, matched line by line (case-sensitive unless `ignore_case: true`).
+# Every hit is reported with file, line and matching text.
+
+# Hits inside these folders are third-party code. Rules marked `noisy: true` (things libraries legitimately
+# do, like spawning processes) are capped there; every other rule keeps its full severity, so a stealer
+# hidden in node_modules/ is still High.
+# A trailing "*" or "-" means "folder name starts with".
+third_party_dirs: ["node_modules", "site-packages", "addons/godot-", "Plugins/", "renpy", "lib/python*", "lib/py3-*",
+                   "lib/py2-*"]
+third_party_max_severity: low
+
+languages:
+  gdscript:
+    - id: os-execute
+      noisy: true
+      severity: high
+      title: Starts an external process
+      pattern: '\bOS\.(execute|execute_with_pipe|create_process|create_instance|kill)\s*\('
+    - id: shell-open-nonweb
+      noisy: true
+      severity: high
+      title: OS.shell_open with a non-web target
+      pattern: '\bOS\.shell_open\s*\(\s*(?!["''](https?://|mailto:))'
+    - id: env-appdata
+      severity: high
+      title: Reads Windows user-data folders from the environment
+      pattern: '\bOS\.get_environment\s*\(\s*["''](APPDATA|LOCALAPPDATA|USERPROFILE)["'']'
+    - id: absolute-file-access
+      severity: high
+      title: File access outside res:// and user://
+      pattern: '\b(FileAccess\.open|DirAccess\.open|File\.new\(\)\.open|Directory\.new\(\)\.open)\s*\(\s*["''](?!res://|user://)([A-Za-z]:[\\/]|/|~)'
+    - id: http-raw-ip
+      severity: high
+      title: HTTP request to a raw IP address
+      pattern: '(request|connect_to_host)\s*\(\s*["'']https?://\d{1,3}(\.\d{1,3}){3}'
+
+  csharp:
+    - id: process-start
+      noisy: true
+      severity: high
+      title: Starts an external process
+      pattern: '\bProcess\.Start\s*\(|new\s+ProcessStartInfo\b'
+    - id: assembly-load-bytes
+      noisy: true
+      severity: high
+      title: Loads code from a byte array
+      pattern: '\bAssembly\.Load\s*\(\s*(new\s+byte|[A-Za-z_][A-Za-z0-9_]*\s*\))|\bAssembly\.Load\(\s*Convert\.FromBase64String'
+    - id: webclient-download
+      noisy: true
+      severity: high
+      title: Downloads a file
+      pattern: '\b(WebClient\(\)\.DownloadFile|\.DownloadFile(Async)?\s*\(|DownloadFileTaskAsync)'
+    - id: protected-data-unprotect
+      severity: high
+      title: Decrypts DPAPI-protected data (browser passwords)
+      pattern: '\bProtectedData\.Unprotect\b'
+    - id: browser-or-discord-paths
+      severity: high
+      title: Environment folder combined with browser or Discord paths
+      pattern: 'GetFolderPath\(.*(Chrome|Edge|Brave|Opera|Firefox|discord|Local Storage|Login Data)'
+    - id: registry-run-key
+      noisy: true
+      severity: high
+      title: Writes an autostart registry key
+      pattern: 'CurrentVersion\\{1,2}Run'
+    - id: powershell-string
+      noisy: true
+      severity: high
+      title: Runs PowerShell
+      pattern: '(?i)["''][^"'']*powershell(\.exe)?\b'
+    - id: base64-blob
+      noisy: true
+      severity: medium
+      title: Large base64 blob in code
+      pattern: '["''][A-Za-z0-9+/]{400,}={0,2}["'']'
+
+  javascript:
+    - id: child-process
+      noisy: true
+      severity: high
+      title: Uses child_process (runs other programs)
+      pattern: '\brequire\s*\(\s*["''](node:)?child_process["'']\s*\)|\bfrom\s+["''](node:)?child_process["'']'
+    - id: browser-profile-read
+      severity: high
+      title: Reads browser profile files
+      pattern: '(?i)(User Data|Login Data|Local State|Network[\\/]+Cookies|Local Storage[\\/]+leveldb)["''].{0,80}|(readFileSync|readFile|copyFileSync)\(.{0,120}(Chrome|Edge|Brave|Opera|discord)'
+    - id: eval-downloaded
+      severity: high
+      title: eval / new Function on downloaded text
+      pattern: '(fetch|axios|request|https?\.get)\(.{0,200}(eval|new\s+Function)\s*\(|\beval\s*\(\s*atob\s*\('
+    - id: win32crypt
+      severity: high
+      title: Windows DPAPI decryption module
+      pattern: '\b(win32crypt|dpapi|node-dpapi|@primno/dpapi)\b'
+    - id: sudo-prompt
+      noisy: true
+      severity: high
+      title: Requests elevated privileges
+      pattern: '\bsudo-prompt\b'
+    - id: wsh-activex
+      severity: high
+      title: Windows Script Host / ActiveX (JScript dropper technique)
+      pattern: '(?i)ActiveXObject\s*\(\s*["''](WScript\.Shell|Shell\.Application|Scripting\.FileSystemObject|ADODB\.Stream|MSXML2\.ServerXMLHTTP|WinHttp\.WinHttpRequest)|WScript\.(Shell|CreateObject)|ADODB\.Stream'
+    - id: obfuscated-exec
+      severity: medium
+      title: Executes a decoded string (common obfuscation)
+      pattern: '\b(eval|Function)\s*\(\s*(atob|Buffer\.from|unescape|decodeURIComponent)\s*\('
+
+  python:
+    - id: subprocess
+      noisy: true
+      severity: high
+      title: Starts an external process
+      pattern: '\b(subprocess\.(Popen|run|call|check_output)|os\.system|os\.popen)\b'
+      pyc_pattern: '^(subprocess|Popen|check_output|getoutput|popen)$'
+    - id: browser-cookie3
+      severity: high
+      title: Steals browser cookies
+      pattern: '\bbrowser_cookie3\b'
+      pyc_pattern: '^browser_cookie3$'
+    - id: win32crypt
+      severity: high
+      title: Windows DPAPI decryption
+      pattern: '\b(win32crypt|CryptUnprotectData)\b'
+      pyc_pattern: '^(win32crypt|CryptUnprotectData)$'
+    - id: webhook-post
+      severity: high
+      title: Posts to a webhook or Telegram bot
+      pattern: '(discord(app)?\.com/api/webhooks/|api\.telegram\.org/bot)'
+    - id: exec-decoded
+      severity: high
+      title: Executes decoded / decompressed code (dropper or obfuscation)
+      pattern: '\b(exec|eval)\s*\(.{0,120}(b64decode|b85decode|b32decode|zlib\.decompress|lzma\.decompress|marshal\.loads|bytes\.fromhex|codecs\.decode)'
+    - id: process-injection
+      severity: high
+      title: Process injection / shellcode API
+      pattern: '\b(VirtualAlloc(Ex)?|WriteProcessMemory|CreateRemoteThread|RtlMoveMemory|NtUnmapViewOfSection)\b'
+      pyc_pattern: '^(VirtualAllocEx|WriteProcessMemory|CreateRemoteThread|RtlMoveMemory|NtUnmapViewOfSection)$'
+    - id: env-userdata
+      noisy: true
+      severity: medium
+      title: Reads Windows user-data folders from the environment
+      pattern: '\bos\.(getenv|environ(\.get)?)\s*[\(\[]\s*["''](APPDATA|LOCALAPPDATA|USERPROFILE)["'']'
+    - id: download-file
+      noisy: true
+      severity: medium
+      title: Downloads a file
+      pattern: '\burllib\.request\.urlretrieve\b|\brequests\.get\s*\(.{0,120}\.(exe|dll|bat|ps1|zip)\b'
+    - id: pyarmor
+      severity: medium
+      title: Obfuscated with PyArmor (hides the real code)
+      pattern: '__pyarmor__|pyarmor_runtime'
+      pyc_pattern: '^(__pyarmor__|pyarmor_runtime\w*)$'
+
+  batch:
+    - id: powershell-hidden
+      severity: high
+      title: Starts PowerShell hidden, encoded or with policy bypass
+      ignore_case: true
+      pattern: '\bpowershell(\.exe)?\b.*\s[-/](e|ec|enc|encodedcommand|w\s+h|w\s+hidden|windowstyle\s+hidden|nop|noprofile|ep\s+bypass|executionpolicy\s+bypass)\b'
+    - id: download
+      severity: high
+      title: Downloads from the internet
+      ignore_case: true
+      pattern: '\b(curl|wget|bitsadmin|certutil)(\.exe)?\b.*(https?://|-urlcache|/transfer)'
+    - id: certutil-decode
+      severity: high
+      title: Decodes a hidden payload with certutil
+      ignore_case: true
+      pattern: '\bcertutil(\.exe)?\b.*-decode'
+    - id: lolbin
+      severity: high
+      title: Script host / LOLBin pointed at a URL or user folder
+      ignore_case: true
+      pattern: '\b(mshta|rundll32|regsvr32|wscript|cscript)(\.exe)?\b.*(https?://|javascript:|appdata|%temp%|\\temp\\)'
+    - id: autostart
+      severity: high
+      title: Installs autostart (Run key, scheduled task, Startup folder)
+      ignore_case: true
+      pattern: '\breg(\.exe)?\s+add\b.*\\(run|runonce)\b|\bschtasks(\.exe)?\s+/create\b|\\start menu\\programs\\startup'
+    - id: defender-tamper
+      severity: high
+      title: Tampers with Windows Defender or the firewall
+      ignore_case: true
+      pattern: 'add-mppreference|set-mppreference|disablerealtimemonitoring|netsh\s+(adv)?firewall'
+    - id: hide-window
+      severity: medium
+      title: Hides files or windows
+      ignore_case: true
+      pattern: '\battrib\s+\+[hs]|\bstart\s+(""\s+)?/(min|b)\b'
+
+  powershell:
+    - id: invoke-expression
+      severity: high
+      title: Runs a string as code (Invoke-Expression / iex)
+      ignore_case: true
+      pattern: '\b(iex|invoke-expression)\b'
+    - id: download
+      severity: high
+      title: Downloads from the internet
+      ignore_case: true
+      pattern: 'downloadstring|downloadfile|downloaddata|invoke-webrequest|\biwr\b|invoke-restmethod|\birm\b|start-bitstransfer|net\.webclient'
+    - id: encoded
+      severity: high
+      title: Decodes or runs encoded commands
+      ignore_case: true
+      pattern: 'frombase64string|\s-(e|ec|enc|encodedcommand)\s'
+    - id: reflection
+      severity: high
+      title: Loads code in memory (reflection / P/Invoke)
+      ignore_case: true
+      pattern: 'reflection\.assembly\]::load|add-type\b.*dllimport|virtualalloc|\[runtime\.interopservices'
+    - id: defender-tamper
+      severity: high
+      title: Tampers with Windows Defender
+      ignore_case: true
+      pattern: 'add-mppreference|set-mppreference|exclusionpath|disablerealtimemonitoring'
+    - id: hidden
+      severity: high
+      title: Runs hidden
+      ignore_case: true
+      pattern: '-w(indowstyle)?\s+h(idden)?\b|createnowindow'
+    - id: autostart
+      severity: high
+      title: Installs autostart
+      ignore_case: true
+      pattern: '\\currentversion\\run|register-scheduledtask|new-scheduledtask|\bschtasks\b'
+    - id: start-process
+      severity: medium
+      title: Starts another program
+      ignore_case: true
+      pattern: '\bstart-process\b'
+
+  vbscript:
+    - id: shell
+      severity: high
+      title: Runs programs through WScript.Shell / Shell.Application
+      ignore_case: true
+      pattern: 'createobject\s*\(\s*"(wscript\.shell|shell\.application)"|new\s+activexobject\s*\(\s*"(wscript\.shell|shell\.application)"|\.shellexecute\b'
+    - id: http
+      severity: high
+      title: Downloads from the internet
+      ignore_case: true
+      pattern: 'msxml2\.(server)?xmlhttp|microsoft\.xmlhttp|winhttp\.winhttprequest'
+    - id: write-binary
+      severity: high
+      title: Writes a binary file (ADODB.Stream)
+      ignore_case: true
+      pattern: 'adodb\.stream'
+    - id: obfuscation
+      severity: medium
+      title: Executes built-up / obfuscated strings
+      ignore_case: true
+      pattern: '\bexecute(global)?\b\s*\(?|\beval\s*\(|(chr[w]?\(\s*\d+\s*\)\s*&\s*){4,}'
+
+  shell:
+    - id: pipe-to-shell
+      severity: high
+      title: Downloads and runs a script (curl | sh)
+      pattern: '\b(curl|wget)\b[^|\n]*\|\s*(sudo\s+)?(ba|z|da)?sh\b'
+    - id: base64-exec
+      severity: high
+      title: Decodes and runs a hidden payload
+      pattern: '\bbase64\s+(-d|-D|--decode)\b.*\|\s*(ba|z)?sh\b|\beval\s+"?\$\(.*base64'
+    - id: osascript
+      severity: high
+      title: Runs AppleScript (macOS stealers use it to phish the password)
+      pattern: '\bosascript\b'
+    - id: keychain
+      severity: high
+      title: Reads the macOS keychain
+      pattern: '\bsecurity\s+(find-generic-password|find-internet-password|dump-keychain)\b'
+    - id: persistence
+      severity: high
+      title: Installs persistence (LaunchAgents, launchctl, crontab)
+      pattern: '\blaunchctl\s+(load|bootstrap)\b|/LaunchAgents/|\bcrontab\s'
+    - id: download-run
+      severity: high
+      title: Downloads a file and makes it executable
+      pattern: '\b(curl|wget)\b.*(-o|-O|--output)\b.*(chmod\s+\+?[0-7]*x|&&\s*\./)'
+    - id: quarantine
+      noisy: true
+      severity: medium
+      title: Removes the macOS quarantine flag (Gatekeeper bypass)
+      pattern: '\bxattr\s+-[a-z]*[dcr]'
+
+  lua:
+    - id: os-execute
+      noisy: true
+      severity: high
+      title: Starts an external process
+      pattern: '\b(os\.execute|io\.popen)\s*\('
+    - id: load-decoded
+      severity: high
+      title: Runs decoded code (loadstring of base64 data)
+      pattern: '\b(loadstring|load)\s*\(\s*(love\.data\.decode|[\w.]*base64|[\w.]*decode)'
+    - id: write-executable
+      severity: high
+      title: Writes an executable or script file
+      pattern: '\bio\.open\s*\([^)]*\.(exe|dll|bat|cmd|ps1|vbs|scr)["'']'
+    - id: env-userdata
+      severity: high
+      title: Reads Windows user-data folders from the environment
+      pattern: '\bos\.getenv\s*\(\s*["''](APPDATA|LOCALAPPDATA|USERPROFILE)["'']'
+    - id: ffi
+      noisy: true
+      severity: medium
+      title: LuaJIT FFI (can call any Windows API)
+      pattern: '\bffi\.(load|cdef)\b'
+    - id: http
+      noisy: true
+      severity: medium
+      title: Network requests
+      pattern: 'require\s*\(?\s*["''](socket\.http|ssl\.https|https)["'']'
+
+# Shared rules: applied to every language, never capped for third-party code.
+shared:
+  - id: stealer-paths
+    severity: high
+    title: Browser or Discord credential path
+    pattern: '(?i)(Login Data|\\Local State|Local Storage[\\/]+leveldb|\\Network\\Cookies|logins\.json|key4\.db)'
+  - id: discord-webhook
+    severity: high
+    title: Discord webhook URL
+    pattern: 'discord(app)?\.com/api/webhooks/'
+  - id: telegram-bot
+    severity: high
+    title: Telegram bot API URL
+    pattern: 'api\.telegram\.org/bot'
+  - id: exe-download
+    severity: high
+    title: Reference to downloading an executable
+    pattern: '(?i)https?://[^\s"''<>]+\.(exe|scr|msi|bat|ps1)\b'
+  - id: discord-token-regex
+    severity: high
+    title: Discord token regular expression (token grabber)
+    pattern: '\[\\w-\]\{2[4-6]\}\\?\.|mfa\\\.\[\\w-\]\{84\}|dQw4w9WgXcQ:'
+  - id: powershell-hidden
+    severity: high
+    title: Starts PowerShell hidden, encoded or with policy bypass
+    pattern: '(?i)\bpowershell(\.exe)?\b.{0,40}\s[-/](e|ec|enc|encodedcommand|w\s+h(idden)?|windowstyle\s+hidden|ep\s+bypass|executionpolicy\s+bypass)\b'

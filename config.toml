@@ -1,0 +1,94 @@
+# jam-triage configuration. Defaults are tuned for a jam of about 150 entries.
+# Paths are relative to this file. Personal settings (tool paths, consent) go in config.local.toml next to
+# this file: it is merged over this one and is git-ignored.
+
+[paths]
+data = "data"
+out = "out"
+rules = "rules"
+
+# Hash-lookup throttling. Every request from every command (analyze, recheck, selftest, upload, detonate)
+# goes through one shared limiter in data/state.db, so two commands running at once still share these
+# limits. When a budget is used up, the remaining lookups wait for the next run.
+[virustotal]
+enabled = true
+requests_per_minute = 4     # free tier: 4/min
+daily_budget = 480          # free tier: 500/day (UTC); kept a little below
+monthly_budget = 15000      # free tier: 15.5K/month
+max_lookups_per_entry = 12  # per entry: main exe first; protects the quota from apps with hundreds of DLLs
+# premium = true            # only for a paid key: lifts the free-tier ceiling that otherwise clamps the values above
+
+[malwarebazaar]
+enabled = true
+requests_per_minute = 20
+daily_budget = 2000         # abuse.ch asks for fair use
+max_lookups_per_entry = 40
+
+[metadefender]
+enabled = true
+requests_per_minute = 10
+daily_budget = 900          # check your plan's limit on metadefender.com
+max_lookups_per_entry = 12
+
+[unpack]
+max_total_bytes = 4_000_000_000
+max_files = 20_000
+max_ratio = 100             # per-archive and per-file (files over 1 MiB) compression ratio
+max_depth = 2               # archive inside archive inside archive is not unpacked
+
+[antivirus]
+enabled = true
+update_before_scan = true   # freshclam / MpCmdRun -SignatureUpdate once per run
+timeout_seconds = 1800
+
+# Entries analysed at the same time. Each worker runs one entry's checks; capa (the heaviest tool, up to
+# max_tool_memory_mb each) is additionally limited to max_parallel_capa runs at once. On machines with less
+# than 32 GB of RAM use max_parallel_capa = 1. `triage analyze --workers N` overrides workers for one run.
+[analysis]
+workers = 3
+max_parallel_capa = 2
+
+[tools]
+diec_timeout = 120
+capa_timeout = 900           # per file; big Godot executables and installers need more than 5 min
+max_tool_memory_mb = 8192    # any analysis tool using more RAM than this is stopped (its child processes too)
+capa_rules = ""             # path to capa-rules, needed for the pip version of capa
+extractor_timeout = 600
+yara_timeout = 60
+max_scan_bytes = 268_435_456  # string/YARA scan limit per file (256 MiB)
+
+# Point at tools that aren't on your PATH (keys as shown by `triage tools`). Leave empty to search PATH.
+# Best set in config.local.toml, for example:
+[tools.paths]
+# diec = "~/jam-triage-tools/die_mac_portable/die.app/Contents/MacOS/diec"
+# gdre = "~/jam-triage-tools/Godot RE Tools.app/Contents/MacOS/Godot RE Tools"
+# capa = "~/jam-triage-tools/capa"
+# 7z = "~/jam-triage-tools/7zip/7zz"        # the official 7-Zip build includes RAR (Homebrew's does not)
+
+# Sandboxes never run by default: only static analysis (plus hash-only lookups) does. A sandbox runs
+# only when a command asks for it: `triage analyze --sandbox`, `triage sandbox ...` or `triage detonate`.
+# They make files PUBLIC and take far longer than the static checks.
+[sandbox]
+consent_all = false         # true only if EVERY entrant agreed (in the jam rules) to public uploads;
+                            # otherwise mark consent per entry in the report's "public upload consent" column
+min_age_minutes = 30        # wait this long after an upload before asking VirusTotal for the results
+
+# Hybrid Analysis (CrowdStrike Falcon Sandbox), used by `analyze --sandbox`, `triage sandbox` and
+# `triage detonate`. Free tier: 200 requests/min, 100 submissions/day (values above are clamped unless
+# premium = true). Every request and submission goes through a shared limiter in data/state.db.
+[hybridanalysis]
+requests_per_minute = 60
+daily_submissions = 95      # free tier: 100/day; kept a little below
+submissions_per_minute = 10
+environment_id = 160        # Windows 10 64-bit
+upload = "exe"              # "exe" = main executable (works); "folder" = exe zipped with its folder (untested)
+max_upload_mb = 100
+
+# `triage detonate <entry>` (one entry, by hand)
+[detonation]
+timeout_seconds = 300
+
+[dashboard]
+host = "127.0.0.1"          # never expose this to your network
+port = 8787
+refresh_seconds = 2

@@ -1,0 +1,42 @@
+# --- Secrets: API keys live in .env (template: .env.example) ---
+.env
+.env.*
+!.env.example
+
+# --- Personal settings: tool paths, consent (merged over config.toml) ---
+config.local.toml
+
+# --- Internal docs: research notes, development decisions (kept locally, never published) ---
+internal/
+
+# --- Jam data and outputs: downloaded submissions are UNTRUSTED files, reports contain entrant data ---
+data/
+out/
+*.log
+
+# --- Third-party rules carry their own licences; fetch them with `triage fetch-rules` ---
+rules/yara/*.yar
+rules/yara/*.yara
+
+# --- Python ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# --- Tool caches ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# --- OS / editors ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
