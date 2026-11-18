@@ -171,6 +171,9 @@ def dedupe(findings: list[Finding]) -> list[Finding]:
     return out
 
 
+UNWRAP_COPY = re.compile(r"^unwrapped/[^/]+/\d+/")
+
+
 def verdict(findings: list[Finding], has_web: bool) -> tuple[str, list[Finding]]:
     """Return (verdict, the findings that caused it)."""
     crit = [f for f in findings if f.severity == Severity.CRITICAL]
@@ -178,8 +181,12 @@ def verdict(findings: list[Finding], has_web: bool) -> tuple[str, list[Finding]]
         return "Disqualify", crit
     high = [f for f in findings if f.severity == Severity.HIGH]
     med = [f for f in findings if f.severity == Severity.MEDIUM]
-    if high or len(med) >= 3:
-        return "Review", high + (med if len(med) >= 3 else [])
+    # The same script recovered from two copies of one game (e.g. a Godot pack embedded in the exe and the
+    # web build's .pck) is one issue, not two.
+    distinct_med = {(f.rule, UNWRAP_COPY.sub("", f.file), f.line, f.detail) if UNWRAP_COPY.match(f.file or "")
+                    else i for i, f in enumerate(med)}
+    if high or len(distinct_med) >= 3:
+        return "Review", high + (med if len(distinct_med) >= 3 else [])
     if has_web:
         return "Web", [f for f in findings if f.severity >= Severity.LOW]
     return "Sandbox OK", [f for f in findings if f.severity >= Severity.LOW]

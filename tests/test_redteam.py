@@ -128,6 +128,21 @@ def test_appended_zip_on_exe_is_found_and_scanned(cfg):
     assert r["verdict"] in ("Review", "Disqualify")
 
 
+def test_app_asar_inside_an_installer_is_extracted_and_scanned(cfg, tmp_path):
+    """electron-builder ships an installer whose payload holds resources/app.asar: its code must be scanned too."""
+    asar = tmp_path / "app.asar"
+    build_asar({"package.json": b'{"main": "main.js"}',
+                "main.js": b"fetch('https://discord.com/api/webhooks/1/abc')"}, asar)
+    payload = zip_bytes({"resources/app.asar": asar.read_bytes(), "Game.exe": tiny_pe(b"electron")})
+    d = cfg.builds_dir / "electron-installer"
+    d.mkdir(parents=True)
+    (d / "Setup.exe").write_bytes(tiny_pe(overlay=payload))
+    r = run_one(cfg, "electron-installer")
+    main_js = [f["path"] for f in r["files"] if f["path"].endswith("/main.js")]
+    assert main_js and "/asar/" in main_js[0]
+    assert any(f["rule"] == "code.shared.discord-webhook" and f.get("file") in main_js for f in r["findings"])
+
+
 @pytest.mark.skipif(not find_7z(), reason="7-Zip not installed")
 def test_appended_7z_on_exe_is_high_and_scanned(cfg, tmp_path):
     src = tmp_path / "src"

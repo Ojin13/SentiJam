@@ -255,6 +255,41 @@ def run(ctx: EntryContext) -> None:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def unwrap_asar(rec, path: Path) -> None:
+        nonlocal added
+        d = dest_for("asar")
+        problems: list[str] = []
+        try:
+            files = extract_asar(path, d, problems=problems)
+            added += add_unwrapped_files(ctx, files, rec.path)
+            done.setdefault("asar", []).append(rec.path)
+        except (AsarError, OSError, ValueError, RecursionError) as exc:
+            ctx.add(Finding(rule="archive.unreadable", severity=Severity.HIGH,
+                            title="Electron app.asar could not be read: the app code was NOT scanned",
+                            file=rec.path, detail=str(exc)[:300], source="unwrap"))
+        if problems:
+            ctx.add(Finding(rule="archive.unextracted", severity=Severity.HIGH,
+                            title=f"{len(problems)} entr{'y' if len(problems) == 1 else 'ies'} in app.asar "
+                                  f"could not be extracted and were NOT scanned",
+                            file=rec.path, detail="; ".join(problems[:5])[:300], source="unwrap"))
+
+    def unwrap_godot(rec, path: Path) -> None:
+        nonlocal added
+        exe = ctx.tool("gdre")
+        if not exe:
+            ctx.not_run("unwrap:godot", "gdre_tools not installed")
+            return
+        d = dest_for("godot")
+        try:
+            p = run_tool([exe, "--headless", f"--recover={path}", f"--output-dir={d}"], timeout=timeout)
+            files = _new_files(d)
+            if not files:
+                _fail(ctx, "Godot", rec.path, (p.stderr or p.stdout).strip()[-300:] or f"exit {p.returncode}")
+            added += add_unwrapped_files(ctx, files, rec.path)
+            done.setdefault("godot", []).append(rec.path)
+        except ToolError as exc:
+            _fail(ctx, "Godot", rec.path, str(exc))
+
     records = list(ctx.files)
     for rec in records:
         try:
@@ -265,41 +300,12 @@ def run(ctx: EntryContext) -> None:
 
             # Electron / NW.js app.asar
             if low.endswith(".asar"):
-                d = dest_for("asar")
-                problems: list[str] = []
-                try:
-                    files = extract_asar(path, d, problems=problems)
-                    added += add_unwrapped_files(ctx, files, rec.path)
-                    done.setdefault("asar", []).append(rec.path)
-                except (AsarError, OSError, ValueError, RecursionError) as exc:
-                    ctx.add(Finding(rule="archive.unreadable", severity=Severity.HIGH,
-                                    title="Electron app.asar could not be read: the app code was NOT scanned",
-                                    file=rec.path, detail=str(exc)[:300], source="unwrap"))
-                if problems:
-                    ctx.add(Finding(rule="archive.unextracted", severity=Severity.HIGH,
-                                    title=f"{len(problems)} entr{'y' if len(problems) == 1 else 'ies'} in app.asar "
-                                          f"could not be extracted and were NOT scanned",
-                                    file=rec.path, detail="; ".join(problems[:5])[:300], source="unwrap"))
+                unwrap_asar(rec, path)
                 continue
 
-            # Godot .pck (or an exe with an embedded pack and no separate .pck)
-            is_pck = low.endswith(".pck")
-            embedded = "godot-embedded" in rec.tags and not any(r.path.lower().endswith(".pck") for r in records)
-            if is_pck or embedded:
-                exe = ctx.tool("gdre")
-                if not exe:
-                    ctx.not_run("unwrap:godot", "gdre_tools not installed")
-                    continue
-                d = dest_for("godot")
-                try:
-                    p = run_tool([exe, "--headless", f"--recover={path}", f"--output-dir={d}"], timeout=timeout)
-                    files = _new_files(d)
-                    if not files:
-                        _fail(ctx, "Godot", rec.path, (p.stderr or p.stdout).strip()[-300:] or f"exit {p.returncode}")
-                    added += add_unwrapped_files(ctx, files, rec.path)
-                    done.setdefault("godot", []).append(rec.path)
-                except ToolError as exc:
-                    _fail(ctx, "Godot", rec.path, str(exc))
+            # Godot .pck, or an exe with a pack embedded (both are recovered when a build ships both)
+            if low.endswith(".pck") or "godot-embedded" in rec.tags:
+                unwrap_godot(rec, path)
                 continue
 
             # PyInstaller
@@ -379,6 +385,7 @@ def run(ctx: EntryContext) -> None:
     from ..unpack import Budget, Limits, unpack_recursive
     budget = Budget(Limits.from_config(ctx.cfg.section("unpack")))
     handled = {p for paths in done.values() for p in paths}     # extracted by a format-specific extractor
+    from_appended: list = []
     for rec in records:
         if rec.kind != "pe" or "vanished" in rec.tags or rec.origin == "unwrapped":
             continue
@@ -386,7 +393,9 @@ def run(ctx: EntryContext) -> None:
             pe_info = (ctx.info.get("pe") or {}).get(rec.path) or {}
             found = appended_archive(ctx.abspath(rec), pe_info)
             if not found:
-                hidden = None if rec.path in handled else unknown_overlay(ctx.abspath(rec), pe_info)
+                # Vendor-signed runtime files (e.g. Microsoft's vc_redist, a CAB-based installer) are trusted.
+                trusted = "trusted-runtime" in rec.tags
+                hidden = None if rec.path in handled or trusted else unknown_overlay(ctx.abspath(rec), pe_info)
                 if hidden:
                     size, share, head = hidden
                     magic = "".join(chr(b) if 32 <= b < 127 else "." for b in head[:8])
@@ -431,10 +440,24 @@ def run(ctx: EntryContext) -> None:
                                 title="Appended archive could not be unpacked: its contents were NOT scanned",
                                 file=rec.path, detail=(r.error or "no files extracted")[:300], source="unwrap"))
             ctx.findings.extend(r.findings)
-            added += add_unwrapped_files(ctx, _new_files(d), rec.path)
+            got = add_unwrapped_files(ctx, _new_files(d), rec.path)
+            added += got
+            from_appended += got
             done.setdefault("appended", []).append(rec.path)
         except Exception as exc:  # noqa: BLE001
             _fail(ctx, "appended archive", rec.path, f"{type(exc).__name__}: {exc}")
+
+    # What came out of an installer or SFX archive: an Electron installer (electron-builder's NSIS default)
+    # holds resources/app.asar, a Godot one its .pck. Give those the same treatment as files in the download.
+    for rec in from_appended:
+        low = rec.path.lower()
+        try:
+            if low.endswith(".asar"):
+                unwrap_asar(rec, ctx.abspath(rec))
+            elif low.endswith(".pck"):
+                unwrap_godot(rec, ctx.abspath(rec))
+        except Exception as exc:  # noqa: BLE001
+            _fail(ctx, "unwrap", rec.path, f"{type(exc).__name__}: {exc}")
 
     ctx.info["unwrapped"] = done
     ctx.info["_unwrapped_new"] = [r.path for r in added]

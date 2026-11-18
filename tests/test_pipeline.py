@@ -441,6 +441,48 @@ def test_dashboard_lookup_column_says_off_without_services(cfg):
     assert entry_layers(cfg, "clean-game")["lookups"]["state"] == "off"
 
 
+def test_capa_skips_godot_engine_next_to_its_recovered_pck(cfg, tmp_path):
+    from jamtriage.checks import EntryContext
+    from jamtriage.checks import capa as capa_mod
+    from jamtriage.models import FileRecord
+
+    ctx = EntryContext(cfg=cfg, slug="g", builds_root=tmp_path, tools={})
+    eng = FileRecord(path="unpacked/g.zip/Game.exe", size=104 << 20, kind="pe", tags=["godot-embedded"])
+    other = FileRecord(path="unpacked/g.zip/tools/Helper.dll", size=1000, kind="pe")
+    ctx.files = [eng, other, FileRecord(path="unpacked/g.zip/Game.pck", size=5000, kind="other")]
+    ctx.info = {"main_exe": eng.path, "engines": ["godot"], "unwrapped": {"godot": ["unpacked/g.zip/Game.pck"]}}
+    assert capa_mod.capa_candidates(ctx) == [other]
+    # A .pck recovered from another folder (the web build) does not cover this exe.
+    ctx.info["unwrapped"] = {"godot": ["unpacked/web.zip/index.pck"]}
+    assert eng in capa_mod.capa_candidates(ctx)
+
+
+def test_godot_embedded_pack_is_unwrapped_even_with_a_web_build_pck(cfg, tmp_path, monkeypatch):
+    from jamtriage.checks import EntryContext, unwrap
+    from jamtriage.models import FileRecord
+
+    calls = []
+
+    def fake_run_tool(cmd, timeout, cwd=None, max_mb=-1):
+        calls.append(next(a for a in cmd if a.startswith("--recover=")))
+        out = Path(next(a for a in cmd if a.startswith("--output-dir="))[len("--output-dir="):])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / f"script{len(calls)}.gd").write_text("extends Node\n")
+        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(unwrap, "run_tool", fake_run_tool)
+    for rel in ("unpacked/win.zip/Game.exe", "unpacked/web.zip/index.pck"):
+        p = cfg.unpacked_dir / "g" / rel.split("/", 1)[1]
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"x")
+    ctx = EntryContext(cfg=cfg, slug="g", builds_root=tmp_path,
+                       tools={"gdre": type("T", (), {"status": "available", "path": "/bin/gdre"})()})
+    monkeypatch.setattr(EntryContext, "tool", lambda self, key: "/bin/gdre" if key == "gdre" else None)
+    ctx.files = [FileRecord(path="unpacked/win.zip/Game.exe", size=10, kind="pe", tags=["godot-embedded"]),
+                 FileRecord(path="unpacked/web.zip/index.pck", size=10, kind="other")]
+    ctx.info = {"engines": ["godot"]}
+    unwrap.run(ctx)
+    assert sorted(ctx.info["unwrapped"]["godot"]) == ["unpacked/web.zip/index.pck", "unpacked/win.zip/Game.exe"]
 
 
 def test_stop_flag_kills_running_tool_and_saves_nothing(cfg, tmp_path):
@@ -522,3 +564,30 @@ def test_dashboard_shows_lookup_answers_before_final_scoring(cfg):
     assert row["lookups"]["pending"] == 0 and row["lookups"]["worst"] in ("high", "critical")
     assert row["verdict"] in ("Review", "Disqualify")
     assert json.loads((cfg.results_dir / "g.json").read_text())["verdict"] == "Sandbox OK"   # dashboard wrote nothing
+
+
+def test_godot_embedded_pack_needs_the_real_trailer(tmp_path):
+    from jamtriage.checks.engine import godot_embedded_pack
+    bare = tmp_path / "engine.exe"
+    bare.write_bytes(b"MZ" + b"\0" * 100 + b"GDPC loader string" + b"\0" * 100)   # every engine has "GDPC"
+    assert not godot_embedded_pack(bare)
+    packed = tmp_path / "game.exe"
+    body = b"MZ" + b"\0" * 100 + b"GDPC" + b"pack data" * 10
+    packed.write_bytes(body + (90).to_bytes(8, "little") + b"GDPC")
+    assert godot_embedded_pack(packed)
+
+
+def test_godot_engine_without_pack_is_flagged_missing_game_data(cfg, tmp_path):
+    from jamtriage.checks import EntryContext
+    from jamtriage.checks.engine import missing_godot_data
+    from jamtriage.models import FileRecord
+    ctx = EntryContext(cfg=cfg, slug="g", builds_root=tmp_path, tools={})
+    ctx.files = [FileRecord(path="builds/files/game.exe", size=10, kind="pe", tags=["godot"]),
+                 FileRecord(path="builds/files/game.console.exe", size=10, kind="pe", tags=["godot"])]
+    missing_godot_data(ctx)
+    assert [f.file for f in ctx.findings if f.rule == "godot.no_game_data"] == ["builds/files/game.exe"]
+    # with the .pck next to it (or a pack embedded) nothing is missing
+    ctx.findings.clear()
+    ctx.files.append(FileRecord(path="builds/files/game.pck", size=10, kind="other"))
+    missing_godot_data(ctx)
+    assert not ctx.findings

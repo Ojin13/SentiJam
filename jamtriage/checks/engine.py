@@ -73,6 +73,36 @@ def scan_markers(path: Path, markers: dict[str, bytes] = MARKERS, max_bytes: int
     return found
 
 
+def godot_embedded_pack(path: Path) -> bool:
+    """True if a Godot pack is embedded in the executable: Godot then ends the file with
+    <pack size: u64 little-endian><b"GDPC">."""
+    try:
+        size = path.stat().st_size
+        if size < 12:
+            return False
+        with open(path, "rb") as f:
+            f.seek(size - 12)
+            tail = f.read(12)
+        pack = int.from_bytes(tail[:8], "little")
+        return tail[8:] == b"GDPC" and 0 < pack < size
+    except OSError:
+        return False
+
+
+def missing_godot_data(ctx: EntryContext) -> None:
+    """A Godot engine exe with no embedded pack and no .pck next to it: the game itself isn't in the
+    download, so there is nothing to play and nothing was scanned (often the pack was shipped elsewhere)."""
+    pck_dirs = {r.path.rsplit("/", 1)[0] for r in ctx.files if r.path.lower().endswith(".pck")}
+    for rec in ctx.files:
+        if "godot" in rec.tags and "godot-embedded" not in rec.tags \
+                and not rec.path.lower().endswith(".console.exe") and rec.path.rsplit("/", 1)[0] not in pck_dirs:
+            ctx.add(Finding(rule="godot.no_game_data", severity=Severity.MEDIUM,
+                            title="Godot engine without its game data (.pck): the game is missing from this "
+                                  "download and was NOT scanned",
+                            file=rec.path, detail="ask for the .pck (or a build with the pack embedded), put it "
+                            "next to the exe and analyse again", source="engine"))
+
+
 def _paths_lower(ctx: EntryContext) -> list[str]:
     return [r.path.lower() for r in ctx.files]
 
@@ -140,7 +170,8 @@ def detect(ctx: EntryContext) -> None:
             rec.tags.append("node-sea")
         if "godot_pck" in m and "godot_str" in m:
             engines.add("godot")
-            rec.tags.append("godot-embedded" if "godot_pck" in m else "godot")
+            # Every Godot engine contains the string "GDPC"; only a real pack ends the file with it.
+            rec.tags.append("godot-embedded" if godot_embedded_pack(ctx.abspath(rec)) else "godot")
         if m & {"nsis", "nsis2", "inno"}:
             rec.tags.append("installer-exe")
         if "upx" in m:
@@ -194,8 +225,13 @@ def detect(ctx: EntryContext) -> None:
                         detail=f"page says {claimed!r}, detected {ctx.info['engine']}", source="engine"))
 
     # Extra executables beyond what the engine ships.
+    def standard_pair(name: str) -> bool:
+        low = name.lower()
+        return (("godot" in engines and low.endswith(".console.exe"))          # Godot's console wrapper
+                or ("unreal" in engines and re.search(r"-win(64|32)-shipping\.exe$", low) is not None))  # UE launcher+game
     exes = [r for r in executables if not rules.is_helper_exe(r.path.rsplit("/", 1)[-1])
-            and not rules.is_engine_runtime(r.path) and "/node_modules/" not in r.path.lower()]
+            and not rules.is_engine_runtime(r.path) and "/node_modules/" not in r.path.lower()
+            and not standard_pair(r.path.rsplit("/", 1)[-1])]
     # Group by build archive: one main exe per platform build is normal.
     by_archive: dict[str, list[FileRecord]] = {}
     for r in exes:
@@ -217,6 +253,7 @@ def detect(ctx: EntryContext) -> None:
                             source="engine"))
     if not any(r.kind in ("pe", "elf", "macho") for r in ctx.files) and not web_roots:
         ctx.info.setdefault("notes", []).append("no executables found")
+    missing_godot_data(ctx)
     ctx.checks["engine"] = "ok"
 
 

@@ -282,3 +282,14 @@ def test_hybrid_restricted_key_is_explained_not_404(ha):
     out = con.export_text()
     assert session.jobs == 0 and "restricted" in out and "Upgrade API key" in out
     assert State(cfg.state_db).quota_used("hybrid-submit") == 0     # no submission slot wasted
+
+
+def test_same_finding_in_two_copies_of_a_godot_pack_counts_once():
+    from jamtriage.models import Finding, Severity
+    from jamtriage.scoring import verdict
+    f = lambda path, rule="code.gdscript.shell-open-computed": Finding(rule=rule, severity=Severity.MEDIUM, title="t", file=path)
+    two_copies = [f("unwrapped/godot/01/scripts/credits.gd"), f("unwrapped/godot/02/scripts/credits.gd"),
+                  f("builds/files/game.exe", "lookup.virustotal_weak")]
+    assert verdict(two_copies, has_web=False)[0] == "Sandbox OK"
+    three_issues = two_copies + [f("unwrapped/godot/01/scripts/other.gd")]
+    assert verdict(three_issues, has_web=False)[0] == "Review"

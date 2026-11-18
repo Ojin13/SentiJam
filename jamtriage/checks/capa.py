@@ -165,11 +165,13 @@ def capa_candidates(ctx: EntryContext) -> list:
     # A Godot executable is the stock engine with the game packed inside. GDRE recovers the game's scripts, which
     # the code rules check; capa on the 100+ MB engine itself needs over 8 GB of memory and adds little.
     godot_recovered = set((ctx.info.get("unwrapped") or {}).get("godot", []))
+    pck_folders = {p.rsplit("/", 1)[0] for p in godot_recovered if p.lower().endswith(".pck")}
     out = []
     for r in ctx.files:
         if r.kind != "pe" or "vanished" in r.tags or "trusted-runtime" in r.tags or "electron-runtime" in r.tags:
             continue
-        if r.path in godot_recovered:
+        engine_exe = bool({"godot", "godot-embedded"} & set(r.tags))
+        if r.path in godot_recovered or (engine_exe and r.path.rsplit("/", 1)[0] in pck_folders):
             continue
         low = r.path.lower()
         if "/node_modules/" in low or not low.endswith((".exe", ".dll", ".scr", ".com", ".cpl", ".sys")):
