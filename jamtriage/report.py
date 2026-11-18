@@ -270,7 +270,7 @@ def write_manifest(results: list[dict], path: Path) -> int:
 
 HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Jam triage report</title>
+<title>SentiJam report</title>
 <style>
 :root{--bg:#0b0f0b;--fg:#cfe8cf;--dim:#7c937c;--line:#1e2a1e;--crit:#ff5c5c;--high:#ffb347;--med:#e6d35a;--low:#8fd18f;--info:#7c937c;--card:#101710}
 @media (prefers-color-scheme: light){:root{--bg:#f7faf7;--fg:#142014;--dim:#5b6e5b;--line:#d5e0d5;--card:#ffffff;--crit:#b3261e;--high:#b35c00;--med:#8a7a00;--low:#2e7d32;--info:#5b6e5b}}
@@ -284,7 +284,7 @@ th{color:var(--dim);font-weight:500} .wrap{overflow-x:auto}
 section.entry{background:var(--card);border:1px solid var(--line);padding:12px 16px;margin:16px 0}
 code,.mono{word-break:break-all} .dim{color:var(--dim)} details summary{cursor:pointer;color:var(--dim)}
 </style></head><body>
-<h1>Jam triage report</h1>
+<h1>SentiJam report</h1>
 <p class="dim">Generated {{ generated }} · platform {{ versions.platform or "?" }} · {{ results|length }} entries.
 Suggested verdicts only: you make the final call. "Not found" means unknown, not clean.</p>
 <h2>Summary</h2>

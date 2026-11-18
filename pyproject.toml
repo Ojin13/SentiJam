@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "jam-triage"
+name = "sentijam"
 version = "0.1.0"
 description = "Malware triage for game jam submissions. Never executes a submission."
 readme = "README.md"

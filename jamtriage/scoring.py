@@ -200,9 +200,9 @@ def verdict(findings: list[Finding], has_web: bool) -> tuple[str, list[Finding]]
 SOURCE_GROUPS = {
     "clamav": "ClamAV", "defender": "Microsoft Defender", "mdatp": "Microsoft Defender",
     "yara": "YARA rules", "capa": "capa",
-    "strings": "jam-triage rules", "code": "jam-triage rules", "pe": "jam-triage rules",
-    "engine": "jam-triage rules", "web": "jam-triage rules", "unwrap": "jam-triage rules",
-    "diec": "jam-triage rules",
+    "strings": "SentiJam rules", "code": "SentiJam rules", "pe": "SentiJam rules",
+    "engine": "SentiJam rules", "web": "SentiJam rules", "unwrap": "SentiJam rules",
+    "diec": "SentiJam rules",
     "virustotal": "VirusTotal engines", "malwarebazaar": "MalwareBazaar", "metadefender": "MetaDefender",
     "virustotal-sandbox": "VirusTotal sandbox", "virustotal-behaviour": "VirusTotal sandbox",
     "hybrid-sandbox": "Hybrid Analysis sandbox", "hybrid-analysis": "Hybrid Analysis sandbox",

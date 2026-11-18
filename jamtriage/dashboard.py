@@ -310,7 +310,7 @@ def create_app(cfg: Config):
     from fastapi import FastAPI
     from fastapi.responses import FileResponse, JSONResponse
 
-    app = FastAPI(title="jam-triage", docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(title="SentiJam", docs_url=None, redoc_url=None, openapi_url=None)
     state = State(cfg.state_db)
 
     @app.get("/api/status")

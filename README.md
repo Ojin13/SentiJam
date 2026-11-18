@@ -2,7 +2,7 @@
 
 # SentiJam
 
-**Malware triage for game jam submissions.** jam-triage downloads every entry of an itch.io jam, inspects it **without ever running it**, and tells you which builds judges can play in a sandbox, which need a human look, and which should be disqualified, with the evidence for each.
+**Malware triage for game jam submissions.** SentiJam downloads every entry of an itch.io jam, inspects it **without ever running it**, and tells you which builds judges can play in a sandbox, which need a human look, and which should be disqualified, with the evidence for each.
 
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white)
 ![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-informational)
@@ -10,7 +10,7 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
 ![Status](https://img.shields.io/badge/status-hobby-orange)
 
-![jam-triage live dashboard](docs/screenshots/dashboard-overview.png)
+![SentiJam live dashboard](docs/screenshots/dashboard-overview.png)
 
 It doesn't prove a file is safe. It makes the obvious cases obvious, says plainly what it could *not* inspect, and leaves the final call to you.
 
@@ -20,9 +20,9 @@ It doesn't prove a file is safe. It makes the obvious cases obvious, says plainl
 
 Game jams ask judges to download and run dozens of executables from strangers. itch.io scans uploads, but scanning isn't perfect, and malware campaigns keep trading on itch.io's reputation: fake "test my game" pages, and fake "game update" comments that delivered Lumma Stealer.
 
-jam-triage is the middle layer of three:
+SentiJam is the middle layer of three:
 1. **Jam rules** keep risky formats out: web builds preferred, no installers, no password-protected archives.
-2. **jam-triage** checks every build before judging starts.
+2. **SentiJam** checks every build before judging starts.
 3. **Judges** run downloads only inside a disposable sandbox.
 
 ## Features
@@ -113,13 +113,13 @@ triage fetch-rules                   # YARA Forge core rules
 
 ```toml
 [tools.paths]
-diec = "~/jam-triage-tools/die_mac_portable/die.app/Contents/MacOS/diec"
-gdre = "~/jam-triage-tools/Godot RE Tools.app/Contents/MacOS/Godot RE Tools"
-capa = "~/jam-triage-tools/capa"
-7z   = "~/jam-triage-tools/7zip/7zz"
+diec = "~/sentijam-tools/die_mac_portable/die.app/Contents/MacOS/diec"
+gdre = "~/sentijam-tools/Godot RE Tools.app/Contents/MacOS/Godot RE Tools"
+capa = "~/sentijam-tools/capa"
+7z   = "~/sentijam-tools/7zip/7zz"
 ```
 
-**Windows:** `winget install 7zip.7zip Microsoft.DotNet.SDK.8`, plus the Windows builds of the tools above. Defender is built in. Run jam-triage **inside Windows Sandbox or a VM**.
+**Windows:** `winget install 7zip.7zip Microsoft.DotNet.SDK.8`, plus the Windows builds of the tools above. Defender is built in. Run SentiJam **inside Windows Sandbox or a VM**.
 
 **API keys** (all free) go in `.env`, which is git-ignored:
 
@@ -227,7 +227,7 @@ Run `triage selftest` after editing them.
 
 ## Acknowledgements
 
-jam-triage glues together excellent free tools. Please respect their licences and terms:
+SentiJam glues together excellent free tools. Please respect their licences and terms:
 [itch-dl](https://github.com/DragoonAethis/itch-dl) ·
 [VirusTotal](https://www.virustotal.com/) ·
 [MalwareBazaar](https://bazaar.abuse.ch/) ·
@@ -254,4 +254,4 @@ MIT. See [LICENSE](LICENSE).
 
 ## Disclaimer
 
-jam-triage is a triage aid, not an antivirus. It can miss malware and it can flag harmless games. Always keep judges' downloads inside a sandbox, and make the final call yourself.
+SentiJam is a triage aid, not an antivirus. It can miss malware and it can flag harmless games. Always keep judges' downloads inside a sandbox, and make the final call yourself.

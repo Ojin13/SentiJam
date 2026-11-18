@@ -1,4 +1,4 @@
-# jam-triage configuration. Defaults are tuned for a jam of about 150 entries.
+# SentiJam configuration. Defaults are tuned for a jam of about 150 entries.
 # Paths are relative to this file. Personal settings (tool paths, consent) go in config.local.toml next to
 # this file: it is merged over this one and is git-ignored.
 
@@ -60,10 +60,10 @@ max_scan_bytes = 268_435_456  # string/YARA scan limit per file (256 MiB)
 # Point at tools that aren't on your PATH (keys as shown by `triage tools`). Leave empty to search PATH.
 # Best set in config.local.toml, for example:
 [tools.paths]
-# diec = "~/jam-triage-tools/die_mac_portable/die.app/Contents/MacOS/diec"
-# gdre = "~/jam-triage-tools/Godot RE Tools.app/Contents/MacOS/Godot RE Tools"
-# capa = "~/jam-triage-tools/capa"
-# 7z = "~/jam-triage-tools/7zip/7zz"        # the official 7-Zip build includes RAR (Homebrew's does not)
+# diec = "~/sentijam-tools/die_mac_portable/die.app/Contents/MacOS/diec"
+# gdre = "~/sentijam-tools/Godot RE Tools.app/Contents/MacOS/Godot RE Tools"
+# capa = "~/sentijam-tools/capa"
+# 7z = "~/sentijam-tools/7zip/7zz"        # the official 7-Zip build includes RAR (Homebrew's does not)
 
 # Sandboxes never run by default: only static analysis (plus hash-only lookups) does. A sandbox runs
 # only when a command asks for it: `triage analyze --sandbox`, `triage sandbox ...` or `triage detonate`.

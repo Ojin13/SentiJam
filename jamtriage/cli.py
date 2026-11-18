@@ -1,4 +1,4 @@
-"""jam-triage command line: triage <command> [options]."""
+"""SentiJam command line: triage <command> [options]."""
 from __future__ import annotations
 
 import argparse
@@ -159,7 +159,7 @@ def cmd_dashboard(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="triage", description="Malware triage for game jam submissions. "
                                 "Never executes a submission.")
-    p.add_argument("--version", action="version", version=f"jam-triage {__version__}")
+    p.add_argument("--version", action="version", version=f"SentiJam {__version__}")
     p.add_argument("--config", help="path to config.toml (default: ./config.toml)")
     p.add_argument("--platform", choices=["macos", "windows", "linux"], help="override OS detection")
     p.add_argument("--debug", action="store_true", help="print tracebacks for failing checks")

@@ -255,7 +255,7 @@ def test_independent_sources_counts_vendors_not_rules():
              f("archive.encrypted", "high", "inventory"), f("av.vanished", "high", "hash"),
              f("clam", "critical", "clamav"), f("mp", "critical", "mdatp"), f("def", "critical", "defender")]
     assert independent_sources(found) == ["ClamAV", "Hybrid Analysis sandbox", "Microsoft Defender",
-                                          "VirusTotal engines", "VirusTotal sandbox", "jam-triage rules",
+                                          "SentiJam rules", "VirusTotal engines", "VirusTotal sandbox",
                                           "local antivirus"]
     assert independent_sources([f("x", "low", "yara"), f("lookups.pending", "medium", "lookups")]) == []
 

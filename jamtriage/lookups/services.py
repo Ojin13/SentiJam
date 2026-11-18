@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 import requests
 
-USER_AGENT = "jam-triage/0.1"
+USER_AGENT = "SentiJam/0.1"
 TIMEOUT = 30
 
 
