@@ -6,7 +6,7 @@
 
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white)
 ![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-informational)
-![Tests](https://img.shields.io/badge/tests-100%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-127%20passing-brightgreen)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
 ![Status](https://img.shields.io/badge/status-hobby-orange)
 
@@ -27,7 +27,7 @@ jam-triage is the middle layer of three:
 
 ## Features
 
-- **Never executes a submission.** Archives, installers and wrappers are unpacked safely, and game code is recovered and read: Godot scripts, Unity C#, Electron `app.asar`, PyInstaller, Node SEA.
+- **Never executes a submission.** Archives, installers and wrappers are unpacked safely, and game code is recovered and read: Godot scripts (from a `.pck` or a pack embedded in the exe), Unity C#, Electron `app.asar` (also from inside its installer), PyInstaller, Node SEA.
 - **Many independent signals:**
   - ClamAV / Microsoft Defender, YARA (YARA Forge core), capa, Detect It Easy;
   - PE and signature analysis, plus string, code and web rules;
@@ -50,7 +50,7 @@ triage analyze --sandbox                       # optional: cloud sandboxes (publ
 triage recheck --collect https://itch.io/jam/your-jam   # before judging ends: nothing swapped?
 ```
 
-`analyze` is resumable: interrupt it and run it again. Unchanged entries reuse their results, and lookups left over when a daily budget runs out finish on the next run.
+`analyze` is resumable: interrupt it and run it again. Ctrl+C stops running tools within a couple of seconds, and half-finished entries are never saved. Unchanged entries reuse their results, and lookups left over when a daily budget runs out finish on the next run.
 
 ## How it works
 
@@ -73,17 +73,17 @@ flowchart LR
 
 | Verdict | When | Next step |
 | --- | --- | --- |
-| **Disqualify** | Any Critical: MalwareBazaar knows the hash, several VirusTotal engines agree, or a sandbox saw data theft | Check the evidence, report the page to itch.io |
+| **Disqualify** | Any Critical: MalwareBazaar knows the hash, several VirusTotal engines agree, a sandbox saw data theft, or two sandboxes call it malware | Check the evidence, report the page to itch.io |
 | **Review** | Any High, or 3+ Medium | Look manually, or send it to a sandbox |
 | **Web** | Has an HTML5 build and nothing above | Judges play the web build |
 | **Sandbox OK** | Only Low or Info | Judges play it in Windows Sandbox or a VM |
 
 Typical findings:
 - **High:** antivirus or YARA hits, stealer strings (browser password files, Discord webhooks), `CryptUnprotectData`, credential/anti-VM/persistence capabilities, installers, double extensions, anything not scanned.
-- **Medium:** packed or engine-less executables, nested archives, single non-ML VirusTotal hits.
+- **Medium:** packed or engine-less executables, nested archives, single non-ML VirusTotal hits, a Godot engine shipped without its game data (nothing to play, nothing scanned).
 - **"Not found"** in a hash lookup means **unknown**, not clean, and *Sandbox OK* never means "safe on a real PC".
 
-**How tools are combined.** There's no probability score. Every tool adds findings to one list, and the worst one decides; a clean result never cancels a flagged one. Each entry also shows **independent sources**: how many separate tools flagged it at Medium or above. That's a hint about how strongly the tools agree; it doesn't change the verdict.
+**How tools are combined.** There's no probability score. Every tool adds findings to one list, and the worst one decides; a clean result never cancels a flagged one. Each entry also shows **independent sources**: how many separate tools flagged it at Medium or above. That's a hint about how strongly the tools agree; it doesn't change the verdict. The same script recovered from two copies of a game (say, the Windows exe and the web build) counts once toward the 3-Medium rule.
 
 **Keeping false positives down**
 - **Runtime files** like `UnityPlayer.dll` get lenient treatment only with a valid signature from a known vendor; a file merely carrying the name is scanned like anything else.
@@ -141,7 +141,7 @@ capa = "~/jam-triage-tools/capa"
 | `triage analyze [--dashboard] [--entry <slug>] [--only <check>] [--force] [--workers N] [--sandbox]` | Analyses all (or some) entries; `--only` re-runs single checks, `--workers` sets how many run at once, `--sandbox` adds the sandboxes |
 | `triage report` | Excel, HTML and the hash manifest; keeps your *final verdict*, *consent* and *notes* columns |
 | `triage recheck [--collect <jam-url>]` | Re-queries hashes and compares builds with the manifest |
-| `triage sandbox plan\|upload\|collect\|status [--provider virustotal\|hybrid]` | Batch sandbox runs within the rate limits |
+| `triage sandbox plan\|upload\|collect\|rescore\|status [--verdict review] [--provider virustotal\|hybrid]` | Batch sandbox runs within the rate limits; `--verdict` picks entries by their static verdict; `rescore` re-applies the current rules to collected reports without new requests |
 | `triage detonate <entry>` / `triage upload <entry> <file>` | One entry by hand (public, needs consent) |
 | `triage dashboard` | Serves the dashboard for an existing `data/` folder |
 
@@ -149,28 +149,42 @@ Paid or restricted entries can't be downloaded: put them in `data/builds/<entry>
 
 ## Sandboxes (opt-in)
 
-Two free cloud sandboxes can run a game's main executable in a Windows VM and report what it did. **They never run by default**, because uploads become **public** and take far longer than the static checks.
+Two free cloud sandboxes can run a game in a Windows VM and report what it did. **They never run by default**, because uploads become **public** and take far longer than the static checks.
 
-1. Record consent: `[sandbox] consent_all = true` in `config.toml`, or mark consent per entry in `report.xlsx`.
-2. Opt in per run with `triage analyze --sandbox`, or by hand with `triage sandbox plan`, then `upload`, then `collect` about 30 minutes later.
+1. Record consent: `[sandbox] consent_all = true` in `config.local.toml`, or mark consent per entry in `report.xlsx`.
+2. Recommended: run the static analysis first, then send only the flagged entries:
+
+```bash
+triage analyze                                  # static checks + hash lookups, nothing uploaded
+triage sandbox plan --verdict review            # dry run: which files, how many requests
+triage sandbox upload --verdict review
+triage sandbox collect --verdict review         # about 30 minutes later
+```
+
+`triage analyze --sandbox` instead submits every consenting entry in one go.
 
 | | VirusTotal | Hybrid Analysis |
 | --- | --- | --- |
 | Free limits | 4 req/min, 500/day (shared with lookups) | 100 submissions/day |
-| Uploads | main exe up to 650 MB; skipped if already known | main exe up to 100 MB |
+| Uploads | up to 650 MB; skipped if already known | up to 100 MB |
 | 150 games | 1–2 days of budget | 2 days |
 
+**What gets uploaded.** A Unity or Unreal exe is only a launcher that needs its data folder, so when the game came in an archive, the whole archive goes up. If the archive is over the limit, the real game exe goes up instead: for Unreal, `<Game>-Win64-Shipping.exe` rather than its launcher. A Godot exe with its game pack embedded runs on its own and goes up by itself.
+
+**How results are scored.** Things every game does in a sandbox don't count: asking for the GPU and free memory, the sandbox test-loading the game's own DLLs, memory patterns that match stock engines. What does count: reading browser profiles or Discord files, traffic to webhooks, bot APIs, paste sites or raw IPs, starting a shell or script host, writing autostart entries, and dropping and running another program. One sandbox's malware label on its own is High, so a person checks it. It becomes Critical only when a second sandbox or at least 3 antivirus engines agree. `triage sandbox rescore` re-applies the current rules to reports you already collected, at no API cost.
+
 - Sandbox results only ever **add** findings; a quiet run never improves a verdict.
+- VirusTotal doesn't sandbox every file, and large archives with hundreds of files often get no run at all. `collect` retries every 2 hours, and after 4 tries marks the entry "no sandbox report". The static checks still stand.
 - Daily limits stop a run cleanly, and the next run continues.
 - Every upload is logged to `data/uploads.jsonl`.
 
 ## Dashboard and reports
 
 `triage analyze --dashboard` (or `triage dashboard`) serves a live, terminal-style page on `http://127.0.0.1:8787`:
-- the run's steps, with an ETA;
+- the run's steps, with an ETA and a progress bar for each long step (entries analysed, files scanned by ClamAV, hashes looked up);
 - API quotas;
 - sandbox progress;
-- one row per entry, showing the worst finding from each layer (static, lookups, each sandbox), the number of independent sources, and the verdict.
+- one row per entry, showing the worst finding from each layer (static, lookups, each sandbox), the number of independent sources, and the verdict. Hash-lookup answers appear in the row as soon as they arrive, with a provisional verdict, before the run's final scoring.
 
 ![Dashboard entries table: every check per entry](docs/screenshots/dashboard-entries.png)
 
