@@ -10,8 +10,8 @@ from pathlib import Path
 from .config import Config
 from .models import Severity
 from .scoring import independent_sources
-from .pipeline import RUN_STEPS, quota_status, result_path
-from .state import State
+from .pipeline import RUN_STEPS, compute_result, local_path, quota_status, result_path
+from .state import LookupCache, State
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 SEV_ORDER = ["critical", "high", "medium", "low", "info"]
@@ -39,21 +39,51 @@ def _layer(source: str) -> str:
     return "static"
 
 
-def entry_layers(cfg: Config, slug: str) -> dict:
-    """Worst severity and flag count (Medium or worse) per layer for one entry, from its result file.
-    Cached by file mtime so the 2-second poll doesn't re-read 150 JSON files."""
+class LiveLookups:
+    """Lets the dashboard re-score provisional entries in memory as hash-lookup answers arrive, instead of
+    waiting for the run's final scoring. Never writes: the analysis process owns the result files."""
+
+    _cache: tuple[float | None, LookupCache | None] = (None, None)
+    _lock = threading.Lock()
+
+    def __init__(self, cfg: Config, state: State):
+        self.state = state
+        try:
+            mtime = cfg.cache_file.stat().st_mtime
+        except OSError:
+            mtime = None
+        with LiveLookups._lock:
+            if LiveLookups._cache[0] != mtime or LiveLookups._cache[1] is None:
+                LiveLookups._cache = (mtime, LookupCache(cfg.cache_file))
+            self.cache = LiveLookups._cache[1]
+        # Changes whenever an answer arrives: cache file rewritten or a queue row finished.
+        self.key = (mtime, tuple(sorted(state.lookup_counts().items())))
+
+
+def entry_layers(cfg: Config, slug: str, live: LiveLookups | None = None) -> dict:
+    """Worst severity and flag count (Medium or worse) per layer for one entry, plus its verdict.
+    A provisional entry is re-scored with the lookup answers that arrived since (when `live` is given).
+    Cached by file mtimes (and the lookup state) so the 2-second poll doesn't redo work."""
     p = result_path(cfg, slug)
     try:
         mtime = p.stat().st_mtime
     except OSError:
         return {}
     hit = _layer_cache.get(slug)
-    if hit and hit[0] == mtime:
+    if hit and hit[0] == mtime and (hit[2] is None or (live is not None and hit[2] == live.key)):
         return hit[1]
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+    live_key = None
+    if data.get("provisional") and live is not None:
+        try:
+            local = json.loads(local_path(cfg, slug).read_text(encoding="utf-8"))
+            data = compute_result(local, live.cache.all_for, live.state.lookup_status, provisional=True)
+            live_key = live.key
+        except (OSError, ValueError, KeyError):
+            pass
     worst = {k: Severity.INFO for k in LAYERS}
     seen = dict.fromkeys(LAYERS, False)
     flags = dict.fromkeys(LAYERS, 0)
@@ -71,11 +101,16 @@ def entry_layers(cfg: Config, slug: str) -> dict:
            for k in LAYERS}
     # "off" = no lookup service was enabled; "none" = enabled, but no file was worth looking up (e.g. web only).
     looked_up = any((data.get("lookups") or {}).values())
-    out["lookups"]["state"] = ("off" if not data.get("lookup_services") else "" if looked_up or seen["lookups"]
-                               else "none")
+    enabled = data.get("lookup_enabled", data.get("lookup_services"))     # older results lack lookup_enabled
+    out["lookups"]["state"] = ("off" if not enabled else "" if looked_up or seen["lookups"] else "none")
     out["threat_score"] = hybrid.get("threat_score")
     out["sources"] = data["sources"] if "sources" in data else independent_sources(data.get("findings") or [])
-    _layer_cache[slug] = (mtime, out)
+    out["lookups"]["pending"] = sum(len(v) for v in (data.get("pending") or {}).values())
+    top = next((f for f in data.get("findings") or [] if f.get("severity") in SEV_ORDER[:4]), None)
+    out["entry"] = {"verdict": data.get("verdict", ""), "counts": data.get("counts") or {},
+                    "top_severity": top["severity"] if top else "", "top_finding": top["title"] if top else "",
+                    "provisional": bool(data.get("provisional"))}
+    _layer_cache[slug] = (mtime, out, live_key)
     return out
 
 
@@ -155,6 +190,15 @@ def build_status(cfg: Config, state: State) -> dict:
         have = {p.stem for p in cfg.results_dir.glob("*.json")}
         entries = [e for e in entries if e["slug"] in have]
     total = (run.get("total") if live else None) or len(entries)
+    # Per-entry layers first: provisional entries are re-scored with lookup answers that already arrived,
+    # and their live verdict and counts feed the tallies below.
+    live_lookups = LiveLookups(cfg, state)
+    layers = {e["slug"]: entry_layers(cfg, e["slug"], live_lookups) for e in entries}
+    for i, e in enumerate(entries):
+        cur = (layers.get(e["slug"]) or {}).get("entry")
+        if cur and (e.get("status") in ("provisional", "done")):
+            entries[i] = {**e, "verdict": cur["verdict"], "counts": cur["counts"],
+                          "top_severity": cur["top_severity"], "top_finding": cur["top_finding"]}
     by_status = {"done": 0, "in_progress": 0, "queued": 0, "errors": 0, "provisional": 0}
     verdicts = {"web": 0, "sandbox_ok": 0, "review": 0, "disqualify": 0}
     findings = {s: 0 for s in SEV_ORDER[:-1]}
@@ -200,7 +244,30 @@ def build_status(cfg: Config, state: State) -> dict:
                 eta = lookup_eta
         elif st["key"] == "clamav":
             st["detail"] = "one pass over every entry; can take several minutes"
-    layers = {e["slug"]: entry_layers(cfg, e["slug"]) for e in entries}
+    # Progress bars for the long steps: [done, total], shown under the step while it runs and once it is done.
+    for st in steps:
+        if st["key"] == "lookups" and st["state"] == "pending" and run.get("state") == "running":
+            counts = state.lookup_counts()
+            if sum(counts.values()):            # lookups start as soon as the first entry is analysed
+                st["progress"] = [sum(counts.values()) - counts.get("pending", 0), sum(counts.values())]
+                st["detail"] = "already running in the background; " + (lookup_detail or "queue being answered")
+            continue
+        if st["state"] not in ("running", "done"):
+            continue
+        if st["key"] == "static" and total:
+            st["progress"] = [min(by_status["done"], total), total]
+        elif st["key"] == "clamav":
+            cp = state.get_meta("clamav_progress") or {}
+            if cp.get("total") and float(cp.get("started") or 0) >= float(run.get("started_ts") or 0):
+                done_files = cp["total"] if st["state"] == "done" else min(int(cp.get("done") or 0), cp["total"])
+                st["progress"] = [done_files, cp["total"]]
+                if st["state"] == "running":
+                    st["detail"] = f"{done_files:,}/{cp['total']:,} files scanned (one pass over every entry)"
+        elif st["key"] == "lookups":
+            counts = state.lookup_counts()
+            queued = sum(counts.values())
+            if queued:
+                st["progress"] = [queued - counts.get("pending", 0), queued]
     sandbox = sandbox_status(cfg, state, entries, layers)
     rank = {"Disqualify": 0, "Review": 1, "Web": 2, "Sandbox OK": 3}
     table = []

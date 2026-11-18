@@ -439,3 +439,59 @@ def test_dashboard_lookup_column_says_off_without_services(cfg):
     build_fixtures(cfg.builds_dir)
     Pipeline(cfg).analyze(show_tools=False)          # the test config enables no lookup service
     assert entry_layers(cfg, "clean-game")["lookups"]["state"] == "off"
+
+
+def test_clamav_progress_counts_scanned_files(cfg, tmp_path, monkeypatch):
+    from jamtriage.checks import antivirus
+    monkeypatch.setattr(antivirus, "CLAMAV_PROGRESS_INTERVAL", 0.05)
+    fake = tmp_path / "clamscan"
+    fake.write_text('#!/bin/sh\nfor a in "$@"; do case "$a" in --log=*) log="${a#--log=}";; esac; done\n'
+                    'for i in 1 2 3 4; do echo "/x/f$i: OK" >> "$log"; sleep 0.1; done\n'
+                    'echo "/x/f5: Eicar-Test-Signature FOUND" >> "$log"\necho "/x/f5: Eicar-Test-Signature FOUND"\n'
+                    'exit 1\n')
+    fake.chmod(0o755)
+    folder = tmp_path / "entry"
+    folder.mkdir()
+    seen = []
+    hits, error = antivirus.scan_clamav_batch(cfg, str(fake), {"e": [folder]}, 30, progress=seen.append)
+    assert error == "" and seen[-1] == 5 and seen == sorted(seen)       # final count, never going backwards
+    assert len(seen) >= 3                                                # updates arrived while scanning
+
+
+def test_dashboard_shows_progress_for_long_steps(cfg):
+    from jamtriage.dashboard import build_status
+    build_fixtures(cfg.builds_dir)
+    pipe = Pipeline(cfg)
+    pipe.analyze(show_tools=False)
+    steps = {s["key"]: s for s in build_status(cfg, pipe.state)["steps"]}
+    assert steps["static"]["progress"] == [11, 11]
+
+
+def test_dashboard_shows_lookup_answers_before_final_scoring(cfg):
+    from jamtriage.dashboard import build_status
+    from jamtriage.pipeline import _write_json, compute_result
+    from jamtriage.state import LookupCache, State
+
+    sha = "ab" * 32
+    local = {"slug": "g", "entry": {"title": "G"}, "checks": {"clamav": "deferred"}, "info": {"engines": []},
+             "files": [{"path": "builds/g.exe", "size": 10, "kind": "pe", "sha256": sha}],
+             "findings": [], "lookups": {"virustotal": [sha]}}
+    state = State(cfg.state_db)
+    state.enqueue_lookup("virustotal", sha, 1, "g")
+    _write_json(local_path(cfg, "g"), local)
+    cache = LookupCache(cfg.cache_file)
+    first = compute_result(local, cache.all_for, state.lookup_status, provisional=True)   # as written mid-run
+    _write_json(cfg.results_dir / "g.json", first)
+    state.upsert_entry("g", title="G", status="provisional", verdict=first["verdict"], counts=first["counts"])
+    state.set_meta("run", {"state": "running", "slugs": ["g"], "total": 1, "steps": []})
+
+    row = build_status(cfg, state)["table"][0]
+    assert row["lookups"]["pending"] == 1 and row["verdict"] == "Sandbox OK"
+
+    # The answer arrives while ClamAV is still running: the row updates without a final scoring pass.
+    cache.put(sha, "virustotal", {"found": True, "malicious": 40, "total": 70, "names": ["Trojan.Stealer"]})
+    state.finish_lookup("virustotal", sha, "done")
+    row = build_status(cfg, state)["table"][0]
+    assert row["lookups"]["pending"] == 0 and row["lookups"]["worst"] in ("high", "critical")
+    assert row["verdict"] in ("Review", "Disqualify")
+    assert json.loads((cfg.results_dir / "g.json").read_text())["verdict"] == "Sandbox OK"   # dashboard wrote nothing

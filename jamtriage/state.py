@@ -137,6 +137,11 @@ class State:
             args = (service,)
         return self.conn.execute(q, args).rowcount
 
+    def lookup_counts(self) -> dict[str, int]:
+        """{status: count} over the whole hash-lookup queue (all services)."""
+        return {r["status"]: r["n"] for r in
+                self.conn.execute("SELECT status, COUNT(*) AS n FROM lookups GROUP BY status")}
+
     def pending_count(self, service: str) -> int:
         return self.conn.execute("SELECT COUNT(*) FROM lookups WHERE service=? AND status='pending'",
                                  (service,)).fetchone()[0]

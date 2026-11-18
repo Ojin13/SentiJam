@@ -150,13 +150,32 @@ def scan_mdatp(ctx: EntryContext, folders: list[Path] | None = None) -> None:
     ctx.checks["mdatp"] = "ok"
 
 
-def scan_clamav_batch(cfg, exe: str, folders_by_slug: dict[str, list[Path]], timeout: int) -> tuple[dict, str]:
+CLAMAV_PROGRESS_INTERVAL = 2.0
+
+
+def _count_log_lines(path: str, state: list[int]) -> int:
+    """Lines clamscan has written to its log so far (one per scanned file); reads only the new part."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(state[0])
+            chunk = fh.read()
+    except OSError:
+        return state[1]
+    state[0] += len(chunk)
+    state[1] += chunk.count(b"\n")
+    return state[1]
+
+
+def scan_clamav_batch(cfg, exe: str, folders_by_slug: dict[str, list[Path]], timeout: int,
+                      progress=None) -> tuple[dict, str]:
     """One clamscan run over every entry's folders (loading the signatures once).
 
     Returns ({slug: [(path, threat), ...]}, error). clamscan reloads ~3.6M signatures on every start,
-    so scanning per entry would add tens of seconds per entry.
+    so scanning per entry would add tens of seconds per entry. `progress(files_scanned)` is called every
+    couple of seconds: clamscan logs one line per file, which gives a real progress count.
     """
     import tempfile
+    import threading
 
     all_folders = [(slug, f) for slug, fs in folders_by_slug.items() for f in fs if f.exists()]
     hits: dict[str, list[tuple[str, str]]] = {slug: [] for slug in folders_by_slug}
@@ -165,13 +184,29 @@ def scan_clamav_batch(cfg, exe: str, folders_by_slug: dict[str, list[Path]], tim
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as fh:
         fh.write("\n".join(str(f) for _, f in all_folders))
         listfile = fh.name
+    logfile = listfile + ".log"
+    counter, stop = [0, 0], threading.Event()
+
+    def watch() -> None:
+        while not stop.wait(CLAMAV_PROGRESS_INTERVAL):
+            progress(_count_log_lines(logfile, counter))
+
+    watcher = threading.Thread(target=watch, daemon=True, name="clamav-progress") if progress else None
+    if watcher:
+        watcher.start()
     try:
-        p = run_tool([exe, "-r", "-i", "--no-summary", "--stdout", "--max-filesize=2000M", "--max-scansize=4000M",
-                      f"--file-list={listfile}"], timeout=timeout)
+        # No -i: every file gets a line ("OK" or "FOUND") in the log, which is what the progress counts.
+        p = run_tool([exe, "-r", "--no-summary", "--stdout", "--max-filesize=2000M", "--max-scansize=4000M",
+                      f"--log={logfile}", f"--file-list={listfile}"], timeout=timeout)
     except ToolError as exc:
         return hits, str(exc)
     finally:
+        stop.set()
+        if watcher:
+            watcher.join(timeout=5)
+            progress(_count_log_lines(logfile, counter))
         Path(listfile).unlink(missing_ok=True)
+        Path(logfile).unlink(missing_ok=True)
     found = parse_clamscan(p.stdout)
     if p.returncode not in (0, 1) and not found:
         return hits, f"exit {p.returncode}: {(p.stderr or p.stdout).strip()[-200:]}"

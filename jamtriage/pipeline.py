@@ -102,6 +102,44 @@ def _ctx_from_dict(cfg: Config, entry: Entry, tools, data: dict) -> EntryContext
     return ctx
 
 
+def compute_result(local: dict, cache_all_for, lookup_status, provisional: bool = False) -> dict:
+    """An entry's scored result from its local checks plus the cached lookup answers. Pure: writes nothing,
+    so the dashboard can recompute provisional entries live while lookups arrive."""
+    ctx_findings = [Finding.from_dict(d) for d in local.get("findings", [])]
+    files = [FileRecord.from_dict(d) for d in local.get("files", [])]
+    lookups = local.get("lookups", {})
+    pending = {svc: {sha for sha in hashes if lookup_status(svc, sha) == "pending"}
+               for svc, hashes in lookups.items()}
+    lf, summary = lookup_findings(files, cache_all_for, pending, local.get("info", {}).get("engines", []),
+                                  local.get("info", {}).get("signatures", {}))
+    findings = dedupe(apply_reputation(ctx_findings + lf, files, cache_all_for))
+    findings.sort(key=lambda f: (-int(f.severity), f.rule, f.file))
+    has_web = bool(local.get("info", {}).get("web_roots"))
+    v, reasons = verdict(findings, has_web)
+    deferred = any(str(s).startswith("deferred") for s in (local.get("checks") or {}).values())
+    provisional = provisional or deferred or any(pending.values())
+    result = {
+        **{k: local[k] for k in ("slug", "entry", "checks", "platform") if k in local},
+        "info": local.get("info", {}),
+        "files": local.get("files", []),
+        "findings": [f.to_dict() for f in findings],
+        "verdict": v,
+        "reasons": [f.to_dict() for f in reasons],
+        "lookups": summary,
+        "pending": {k: sorted(v_) for k, v_ in pending.items() if v_},
+        "lookup_services": sorted(k for k, v_ in lookups.items() if v_),
+        "lookup_enabled": sorted(lookups),            # services enabled when the entry was analysed
+        "lookup_errors": {svc: n for svc in lookups
+                          if (n := sum(1 for sha in lookups[svc] if lookup_status(svc, sha) == "error"))},
+        "counts": counts(findings),
+        "sources": independent_sources(findings),
+        "has_web": has_web,
+        "provisional": provisional,
+        "scored": iso_now(),
+    }
+    return result
+
+
 class Pipeline:
     def __init__(self, cfg: Config, console: Console | None = None, lookup_clients: dict | None = None,
                  services: list[str] | None = None):
@@ -331,40 +369,12 @@ class Pipeline:
 
     # ------------------------------------------------------------------ scoring
     def score(self, slug: str, local: dict, provisional: bool = False) -> dict:
-        ctx_findings = [Finding.from_dict(d) for d in local.get("findings", [])]
-        files = [FileRecord.from_dict(d) for d in local.get("files", [])]
-        lookups = local.get("lookups", {})
-        pending = {svc: {sha for sha in hashes if self.state.lookup_status(svc, sha) == "pending"}
-                   for svc, hashes in lookups.items()}
-        lf, summary = lookup_findings(files, self.cache.all_for, pending, local.get("info", {}).get("engines", []),
-                                      local.get("info", {}).get("signatures", {}))
-        findings = dedupe(apply_reputation(ctx_findings + lf, files, self.cache.all_for))
-        findings.sort(key=lambda f: (-int(f.severity), f.rule, f.file))
-        has_web = bool(local.get("info", {}).get("web_roots"))
-        v, reasons = verdict(findings, has_web)
-        deferred = any(str(s).startswith("deferred") for s in (local.get("checks") or {}).values())
-        provisional = provisional or deferred or any(pending.values())
-        top = findings[0] if findings else None
-        result = {
-            **{k: local[k] for k in ("slug", "entry", "checks", "platform") if k in local},
-            "info": local.get("info", {}),
-            "files": local.get("files", []),
-            "findings": [f.to_dict() for f in findings],
-            "verdict": v,
-            "reasons": [f.to_dict() for f in reasons],
-            "lookups": summary,
-            "pending": {k: sorted(v_) for k, v_ in pending.items() if v_},
-            "lookup_services": sorted(k for k, v_ in lookups.items() if v_),
-            "lookup_errors": {svc: n for svc in lookups
-                              if (n := sum(1 for sha in lookups[svc] if self.state.lookup_status(svc, sha) == "error"))},
-            "counts": counts(findings),
-            "sources": independent_sources(findings),
-            "has_web": has_web,
-            "provisional": provisional,
-            "scored": iso_now(),
-        }
+        result = compute_result(local, self.cache.all_for, self.state.lookup_status, provisional)
+        findings = result["findings"]
+        v = result["verdict"]
+        top = Finding.from_dict(findings[0]) if findings else None
         _write_json(result_path(self.cfg, slug), result)
-        self.state.upsert_entry(slug, status="provisional" if provisional else "done", stage="", verdict=v,
+        self.state.upsert_entry(slug, status="provisional" if result["provisional"] else "done", stage="", verdict=v,
                                 counts=result["counts"],
                                 top_severity=top.severity.label if top and top.severity >= Severity.LOW else "",
                                 top_finding=top.title if top and top.severity >= Severity.LOW else "")
@@ -565,8 +575,16 @@ class Pipeline:
         self.state.set_meta("current", {"entry": f"{len(ctxs)} entries", "stage": "ClamAV batch scan"})
         self.console.print(f"ClamAV: scanning {len(ctxs)} entr{'y' if len(ctxs) == 1 else 'ies'} in one pass…")
         timeout = int(self.cfg.section("antivirus").get("timeout_seconds", 1800)) * max(1, len(ctxs) // 10 + 1)
+        total_files = sum(len(locals_[s].get("files") or []) for s in ctxs)
+        started = time.time()
+
+        def progress(done: int) -> None:
+            self.state.set_meta("clamav_progress", {"done": done, "total": total_files, "started": started})
+
+        progress(0)
         hits, error = antivirus.scan_clamav_batch(
-            self.cfg, self.tools["clamav"].path, {s: antivirus.entry_folders(c) for s, c in ctxs.items()}, timeout)
+            self.cfg, self.tools["clamav"].path, {s: antivirus.entry_folders(c) for s, c in ctxs.items()}, timeout,
+            progress=progress)
         for slug, ctx in ctxs.items():
             ctx.info["av_update"] = first.info["av_update"]
             antivirus.apply_clamav_hits(ctx, hits.get(slug, []), error)

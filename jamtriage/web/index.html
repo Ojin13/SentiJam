@@ -172,8 +172,10 @@ function layerCell(l, status) {
 
 function lookupCell(l, status) {
   const td = layerCell(l, status);
-  if (status === "provisional" && (!l || !l.worst)) { td.textContent = "pending"; td.className = "c skip"; }
-  else if (l && l.state === "off") { td.textContent = "off"; td.className = "c muted"; td.title = "no lookup service enabled (API keys in .env)"; }
+  if (l && l.state === "off") { td.textContent = "off"; td.className = "c muted"; td.title = "no lookup service enabled (API keys in .env)"; }
+  else if (l && l.pending > 0 && !l.worst) { td.textContent = "pending (" + l.pending + ")"; td.className = "c skip"; td.title = l.pending + " hash(es) still waiting for an answer"; }
+  else if (l && l.pending > 0) { td.title = l.pending + " more hash(es) still waiting for an answer"; }
+  else if (!l && status === "provisional") { td.textContent = "pending"; td.className = "c skip"; }
   else if (l && l.state === "none") { td.textContent = "-"; td.className = "c muted"; td.title = "no file worth looking up"; }
   return td;
 }
@@ -242,6 +244,11 @@ function renderSteps(s) {
     right.appendChild(el("span", st.title + "  "));
     right.appendChild(el("b", (words[st.state] || st.state).toUpperCase()));
     if (st.detail) right.appendChild(el("div", st.detail, "detail"));
+    if (Array.isArray(st.progress) && st.progress[1] > 0) {
+      const [done, total] = st.progress, w = window.innerWidth < 600 ? 16 : 30;
+      const f = Math.max(0, Math.min(w, Math.round(done / total * w)));
+      right.appendChild(el("div", "[" + "█".repeat(f) + "░".repeat(w - f) + "] " + Math.floor(done / total * 100) + "%  " + done.toLocaleString() + "/" + total.toLocaleString(), "meter"));
+    }
     box.appendChild(right);
   });
 }
