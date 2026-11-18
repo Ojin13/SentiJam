@@ -59,13 +59,45 @@ def _entries(cfg: Config, only: list[str] | None) -> list[dict]:
     return out
 
 
+VERDICT_CHOICES = {"review": "Review", "disqualify": "Disqualify", "sandbox-ok": "Sandbox OK", "web": "Web"}
+
+
+def slugs_with_verdict(cfg: Config, verdicts: list[str]) -> list[str]:
+    """Entries whose current static verdict is one of `verdicts` (CLI names: review, disqualify, sandbox-ok, web)."""
+    wanted = {VERDICT_CHOICES[v] for v in verdicts}
+    out = []
+    for p in sorted(cfg.results_dir.glob("*.json")):
+        try:
+            r = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if r.get("verdict") in wanted and r.get("slug"):
+            out.append(r["slug"])
+    return out
+
+
 def _target(cfg: Config, local: dict, max_bytes: int = VT_MAX_UPLOAD,
             limit_text: str = "VirusTotal's 650 MB upload limit") -> tuple[str, Path | None, str, str]:
-    """(relative path, absolute path, sha256, skip reason) of the file to sandbox: the main executable."""
+    """(relative path, absolute path, sha256, skip reason) of the file to sandbox.
+
+    Usually the main executable. When it came out of a downloaded archive, the whole archive instead:
+    a Unity or Unreal exe is only a launcher that needs its DLLs and data folder next to it, so on its
+    own it would just fail to start in the sandbox. Falls back to the exe if the archive is too big.
+    A Godot exe with the game packed inside runs on its own, so it goes up by itself: VirusTotal's
+    sandboxes run a single program far more reliably than a big archive of files.
+    """
     from .detonate import _abs
     main = (local.get("info") or {}).get("main_exe") or ""
     if not main:
         return "", None, "", "no executable (web-only or no game binary)"
+    archive = None if _self_contained(cfg, local, main) else _source_archive(local, main)
+    if archive and archive.get("sha256") and archive.get("size", 0) <= max_bytes:
+        apath = _abs(cfg, local, archive["path"])
+        if apath.is_file():
+            return archive["path"], apath, archive["sha256"], ""
+    shipping = _unreal_shipping_exe(local, main)
+    if shipping:                            # Unreal's GameName.exe only launches the real game exe
+        main = shipping
     rec = next((f for f in local.get("files", []) if f.get("path") == main), None)
     if not rec or not rec.get("sha256"):
         return main, None, "", "main executable not hashed"
@@ -75,6 +107,34 @@ def _target(cfg: Config, local: dict, max_bytes: int = VT_MAX_UPLOAD,
     if rec.get("size", 0) > max_bytes:
         return main, path, rec["sha256"], f"larger than {limit_text}"
     return main, path, rec["sha256"], ""
+
+
+def _self_contained(cfg: Config, local: dict, main: str) -> bool:
+    """True for a Godot exe that really carries its game pack (checked on disk, not from saved tags)."""
+    from ..checks.engine import godot_embedded_pack
+    from .detonate import _abs
+    path = _abs(cfg, local, main)
+    return path.is_file() and bool(godot_embedded_pack(path))
+
+
+def _unreal_shipping_exe(local: dict, main: str) -> str:
+    """For an Unreal build, the <Game>/Binaries/Win64/<Game>-Win64-Shipping.exe next to the launcher, or ''."""
+    folder = main.rsplit("/", 1)[0] + "/"
+    hits = [f["path"] for f in local.get("files", []) if f.get("kind") == "pe" and f["path"].startswith(folder)
+            and "/binaries/win64/" in f["path"].lower() and f["path"].lower().endswith("-shipping.exe")]
+    return hits[0] if len(hits) == 1 else ""
+
+
+def _source_archive(local: dict, main: str) -> dict | None:
+    """The downloaded archive (file record) the main exe was extracted from, or None."""
+    area, _, rest = main.partition("/")
+    if area != "unpacked" or "/" not in rest:
+        return None
+    outer = rest.split("/", 1)[0]
+    hits = [f for f in local.get("files", [])
+            if f.get("path", "").startswith("builds/") and f["path"].rsplit("/", 1)[-1] == outer
+            and f.get("kind") == "archive"]
+    return hits[0] if len(hits) == 1 else None
 
 
 def _consents(cfg: Config) -> tuple[bool, dict]:
@@ -201,14 +261,22 @@ def upload_all(cfg: Config, console: Console, only: list[str] | None = None) -> 
 
 
 def _verdict_findings(report: dict) -> list[Finding]:
+    """Findings from the sandboxes' own verdicts. One sandbox's malware label on its own is High (a person
+    looks at it): their family classifiers do misfire on game engines. It is Critical when a second sandbox
+    or at least 3 antivirus engines agree."""
     out = []
-    for v in report.get("sandbox_verdicts") or []:
+    verdicts = report.get("sandbox_verdicts") or []
+    bad_boxes = {v.get("sandbox", "?") for v in verdicts if v.get("category") == "malicious"}
+    corroborated = len(bad_boxes) >= 2 or int(report.get("malicious") or 0) >= 3
+    for v in verdicts:
         cat, names, box = v.get("category", ""), v.get("names") or [], v.get("sandbox", "?")
         if cat == "malicious":
             out.append(Finding(rule="detonation.vt_sandbox_malicious",
-                               severity=Severity.CRITICAL if names else Severity.HIGH,
+                               severity=Severity.CRITICAL if corroborated else Severity.HIGH,
                                title=f"Sandbox: VirusTotal's {box} sandbox says malicious"
                                      + (f" ({', '.join(names)})" if names else ""),
+                               detail="" if corroborated else "only this sandbox says so and antivirus engines "
+                                      "don't agree: check its behaviour report before acting",
                                source="virustotal-sandbox"))
         elif cat == "suspicious":
             out.append(Finding(rule="detonation.vt_sandbox_suspicious", severity=Severity.MEDIUM,
@@ -217,9 +285,65 @@ def _verdict_findings(report: dict) -> list[Finding]:
     return out
 
 
+def _own_files(local: dict) -> set[str]:
+    return {f["path"].rsplit("/", 1)[-1].lower() for f in local.get("files", [])}
+
+
+def _sandbox_findings(report: dict, summary: dict | None, local: dict) -> tuple[list[Finding], bool]:
+    """(findings, whether there was a behaviour report) for one entry's VirusTotal results."""
+    from .detonate import _vt_behaviour_texts, map_behaviour
+    findings = _verdict_findings(report)
+    has_behaviour = bool(summary) and any(summary.get(k) for k in summary)
+    if has_behaviour:
+        findings += [f for f in map_behaviour(_vt_behaviour_texts(summary, _own_files(local)), None, [],
+                                              "virustotal-sandbox") if f.rule != "detonation.quiet"]
+    return findings, has_behaviour
+
+
+def _store(cfg: Config, pipe, slug: str, file: str, status: str, findings: list[Finding]) -> dict:
+    """Replace the entry's VirusTotal-sandbox findings and re-score it."""
+    if status == "no_report":
+        findings = findings + [Finding(rule="detonation.no_report", severity=Severity.INFO,
+                                       title="VirusTotal didn't run this file in a sandbox (common for game "
+                                             "binaries); nothing was learned from detonation",
+                                       source="virustotal-sandbox")]
+    lp = local_path(cfg, slug)
+    local = json.loads(lp.read_text(encoding="utf-8"))
+    local["findings"] = [f for f in local.get("findings", []) if f.get("source") != "virustotal-sandbox"]
+    local["findings"] += [f.to_dict() for f in findings]
+    local.setdefault("info", {}).setdefault("sandbox", {})["virustotal"] = {
+        "when": iso_now(), "file": file, "status": status}
+    lp.write_text(json.dumps(local, indent=1), encoding="utf-8")
+    return pipe.score(slug, local)
+
+
+def rescore_all(cfg: Config, console: Console, only: list[str] | None = None, pipe=None) -> int:
+    """Re-apply the current rules to sandbox reports already collected (no requests)."""
+    from ..pipeline import Pipeline
+    pipe = pipe or Pipeline(cfg, console)
+    n = 0
+    for row in pipe.state.sandbox_all():
+        slug = row["slug"]
+        if (only and slug not in only) or row["status"] not in ("collected", "no_report"):
+            continue
+        d = cfg.data_dir / "detonation" / slug
+        fp, bp = d / "virustotal-file.json", d / "virustotal-behaviour.json"
+        if not fp.is_file():
+            continue
+        report = json.loads(fp.read_text(encoding="utf-8"))
+        summary = json.loads(bp.read_text(encoding="utf-8")) if bp.is_file() else None
+        local = json.loads(local_path(cfg, slug).read_text(encoding="utf-8"))
+        findings, _ = _sandbox_findings(report, summary, local)
+        res = _store(cfg, pipe, slug, row["file"], row["status"], findings)
+        flags = [f for f in findings if f.severity >= Severity.MEDIUM]
+        console.print(f"{slug}: {len(flags)} sandbox finding(s); verdict {res['verdict']}")
+        n += 1
+    console.print(f"Re-scored {n} entr{'y' if n == 1 else 'ies'} from saved sandbox reports. Then `triage report`.")
+    return 0
+
+
 def collect_all(cfg: Config, console: Console, only: list[str] | None = None, force: bool = False,
                 pipe=None) -> int:
-    from .detonate import _vt_behaviour_texts, map_behaviour
     from ..pipeline import Pipeline
     if not allowed(cfg):
         return 2
@@ -265,36 +389,20 @@ def collect_all(cfg: Config, console: Console, only: list[str] | None = None, fo
             console.print(f"[red]{slug}: {type(exc).__name__}: {exc}; will retry next run[/]")
             continue
         attempts = row["attempts"] + 1
-        findings = _verdict_findings(report)
-        has_behaviour = bool(summary) and any(summary.get(k) for k in summary)
-        if has_behaviour:
-            findings += [f for f in map_behaviour(_vt_behaviour_texts(summary), None, [], "virustotal-sandbox")
-                         if f.rule != "detonation.quiet"]
+        local = json.loads(local_path(cfg, slug).read_text(encoding="utf-8"))
+        findings, has_behaviour = _sandbox_findings(report, summary, local)
         if not has_behaviour and not findings and attempts < MAX_COLLECT_ATTEMPTS:
             st.sandbox_set(slug, status="waiting", checked=time.time(), attempts=attempts)
             waiting += 1
             console.print(f"{slug}: no sandbox report yet (attempt {attempts}/{MAX_COLLECT_ATTEMPTS})")
             continue
         status = "collected" if (has_behaviour or findings) else "no_report"
-        if status == "no_report":
-            findings.append(Finding(rule="detonation.no_report", severity=Severity.INFO,
-                                    title="VirusTotal didn't run this file in a sandbox (common for game "
-                                          "binaries); nothing was learned from detonation",
-                                    source="virustotal-sandbox"))
         out_dir = cfg.data_dir / "detonation" / slug
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "virustotal-file.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
         if summary:
             (out_dir / "virustotal-behaviour.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
-        lp = local_path(cfg, slug)
-        local = json.loads(lp.read_text(encoding="utf-8"))
-        # Only ever add findings: a quiet sandbox run never upgrades a verdict.
-        local["findings"] = [f for f in local.get("findings", []) if f.get("source") != "virustotal-sandbox"]
-        local["findings"] += [f.to_dict() for f in findings]
-        local.setdefault("info", {}).setdefault("sandbox", {})["virustotal"] = {
-            "when": iso_now(), "file": row["file"], "status": status}
-        lp.write_text(json.dumps(local, indent=1), encoding="utf-8")
-        res = pipe.score(slug, local)
+        res = _store(cfg, pipe, slug, row["file"], status, findings)
         st.sandbox_set(slug, status=status, checked=time.time(), attempts=attempts)
         got += 1
         flags = [f for f in findings if f.severity >= Severity.MEDIUM]
@@ -360,6 +468,8 @@ def run(cfg: Config, console: Console, action: str, providers: list[str], only: 
             rc = max(rc, mod.upload_all(cfg, console, only))
         elif action == "collect":
             rc = max(rc, mod.collect_all(cfg, console, only, force=force, pipe=pipe))
+        elif action == "rescore" and hasattr(mod, "rescore_all"):
+            rc = max(rc, mod.rescore_all(cfg, console, only, pipe=pipe))
     if action != "plan":
         State(cfg.state_db).set_meta("current", {"entry": "", "stage": ""})
     return rc

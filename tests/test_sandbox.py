@@ -1,6 +1,7 @@
 """Batch VirusTotal sandboxing: consent, budget, resumability, merging results."""
 from __future__ import annotations
 
+import struct
 import time
 
 import pytest
@@ -282,6 +283,159 @@ def test_hybrid_restricted_key_is_explained_not_404(ha):
     out = con.export_text()
     assert session.jobs == 0 and "restricted" in out and "Upgrade API key" in out
     assert State(cfg.state_db).quota_used("hybrid-submit") == 0     # no submission slot wasted
+
+
+def test_sandbox_verdict_filter_picks_only_flagged_entries(cfg):
+    import json as _json
+
+    from jamtriage.cli import main
+    cfg.results_dir.mkdir(parents=True, exist_ok=True)
+    for slug, verdict in [("a", "Review"), ("b", "Sandbox OK"), ("c", "Review"), ("d", "Web")]:
+        (cfg.results_dir / f"{slug}.json").write_text(_json.dumps({"slug": slug, "verdict": verdict}))
+    assert vtsandbox.slugs_with_verdict(cfg, ["review"]) == ["a", "c"]
+    assert vtsandbox.slugs_with_verdict(cfg, ["review", "web"]) == ["a", "c", "d"]
+    assert vtsandbox.slugs_with_verdict(cfg, ["disqualify"]) == []
+
+
+def test_sandbox_verdict_filter_with_no_match_does_nothing(tmp_path, monkeypatch, capsys):
+    import json as _json
+
+    from jamtriage import cli
+    (tmp_path / "config.toml").write_text('[paths]\ndata = "data"\nout = "out"\n')
+    res = tmp_path / "data" / "results"
+    res.mkdir(parents=True)
+    (res / "a.json").write_text(_json.dumps({"slug": "a", "verdict": "Sandbox OK"}))
+    called = []
+    monkeypatch.setattr(vtsandbox, "run", lambda *a, **k: called.append(a) or 0)
+    monkeypatch.setattr(vtsandbox, "available", lambda cfg: ["virustotal"])
+    rc = cli.main(["--config", str(tmp_path / "config.toml"), "sandbox", "upload", "--verdict", "review"])
+    assert rc == 0 and called == []          # never falls back to "every entry"
+
+
+def test_sandbox_uploads_the_whole_archive_for_an_extracted_game(cfg):
+    """A Unity exe is only a launcher; on its own it can't start, so the original zip goes to the sandbox."""
+    root = cfg.builds_dir / "unity"
+    (root / "files").mkdir(parents=True)
+    (root / "files" / "Game.zip").write_bytes(b"PK" + b"0" * 100)
+    exe_dir = cfg.unpacked_dir / "unity" / "Game.zip" / "Game"
+    exe_dir.mkdir(parents=True)
+    (exe_dir / "Game.exe").write_bytes(tiny_pe(b"stub"))
+    local = {"slug": "unity", "entry": {"root": str(root)},
+             "info": {"main_exe": "unpacked/Game.zip/Game/Game.exe"},
+             "files": [{"path": "builds/files/Game.zip", "sha256": "a" * 64, "size": 102, "kind": "archive"},
+                       {"path": "unpacked/Game.zip/Game/Game.exe", "sha256": "b" * 64, "size": 10}]}
+    rel, path, sha, why = vtsandbox._target(cfg, local)
+    assert (rel, sha, why) == ("builds/files/Game.zip", "a" * 64, "")
+    assert path.is_file()
+    # archive over the provider's limit: fall back to the exe
+    rel, _path, sha, why = vtsandbox._target(cfg, local, max_bytes=50)
+    assert (rel, sha, why) == ("unpacked/Game.zip/Game/Game.exe", "b" * 64, "")
+    # a loose exe (not from an archive) is still uploaded as itself
+    assert vtsandbox._source_archive(local, "builds/files/Game.exe") is None
+
+
+def test_sandbox_uses_the_unreal_game_exe_not_its_launcher_when_the_archive_is_too_big(cfg):
+    root = cfg.builds_dir / "ue"
+    (root / "files").mkdir(parents=True)
+    (root / "files" / "Big.zip").write_bytes(b"PK" + b"0" * 100)
+    base = cfg.unpacked_dir / "ue" / "Big.zip" / "Win"
+    (base / "Game" / "Binaries" / "Win64").mkdir(parents=True)
+    (base / "Game.exe").write_bytes(tiny_pe(b"launcher"))
+    (base / "Game" / "Binaries" / "Win64" / "Game-Win64-Shipping.exe").write_bytes(tiny_pe(b"game"))
+    ship = "unpacked/Big.zip/Win/Game/Binaries/Win64/Game-Win64-Shipping.exe"
+    local = {"slug": "ue", "entry": {"root": str(root)}, "info": {"main_exe": "unpacked/Big.zip/Win/Game.exe"},
+             "files": [{"path": "builds/files/Big.zip", "sha256": "a" * 64, "size": 102, "kind": "archive"},
+                       {"path": "unpacked/Big.zip/Win/Game.exe", "sha256": "b" * 64, "size": 10, "kind": "pe"},
+                       {"path": ship, "sha256": "c" * 64, "size": 10, "kind": "pe"}]}
+    assert vtsandbox._target(cfg, local)[0] == "builds/files/Big.zip"                 # archive fits: whole game
+    rel, _p, sha, why = vtsandbox._target(cfg, local, max_bytes=50)                 # too big: the real game exe
+    assert (rel, sha, why) == (ship, "c" * 64, "")
+
+
+
+def test_sandbox_uploads_a_self_contained_godot_exe_on_its_own(cfg):
+    """A Godot exe with its game pack embedded runs alone, so it goes up instead of the whole archive."""
+    root = cfg.builds_dir / "gd"
+    (root / "files").mkdir(parents=True)
+    (root / "files" / "Game.zip").write_bytes(b"PK" + b"0" * 100)
+    exe_dir = cfg.unpacked_dir / "gd" / "Game.zip"
+    exe_dir.mkdir(parents=True)
+    pack = b"GDPC" + b"\0" * 60
+    (exe_dir / "game.exe").write_bytes(tiny_pe(b"godot") + pack + struct.pack("<Q", len(pack)) + b"GDPC")
+    (exe_dir / "bare.exe").write_bytes(tiny_pe(b"godot GDPC"))     # engine only, game in a .pck beside it
+    files = [{"path": "builds/files/Game.zip", "sha256": "a" * 64, "size": 102, "kind": "archive"},
+             {"path": "unpacked/Game.zip/game.exe", "sha256": "b" * 64, "size": 10, "kind": "pe"},
+             {"path": "unpacked/Game.zip/bare.exe", "sha256": "c" * 64, "size": 10, "kind": "pe",
+              "tags": ["godot-embedded"]}]                                  # stale tag from an old run
+    local = {"slug": "gd", "entry": {"root": str(root)}, "info": {"main_exe": "unpacked/Game.zip/game.exe"},
+             "files": files}
+    rel, path, sha, why = vtsandbox._target(cfg, local)
+    assert (rel, sha, why) == ("unpacked/Game.zip/game.exe", "b" * 64, "")
+    assert path.is_file()
+    local["info"]["main_exe"] = "unpacked/Game.zip/bare.exe"                # bare engine: the zip, not the tag
+    assert vtsandbox._target(cfg, local)[0] == "builds/files/Game.zip"
+
+# --- VirusTotal behaviour mapping: sandbox noise vs real behaviour --------------------------------------
+
+def _texts_and_findings(summary, own=frozenset()):
+    from jamtriage.sandbox.detonate import _vt_behaviour_texts, map_behaviour
+    return {f.rule for f in map_behaviour(_vt_behaviour_texts(summary, own), None, [], "virustotal-sandbox")
+            if f.rule != "detonation.quiet"}            # collect drops the "quiet run" note too
+
+
+def test_sandbox_noise_every_game_produces_is_not_a_finding():
+    summary = {
+        # VirusTotal test-loading the uploaded zip's own DLLs, and its unpacker
+        "command_executions": [r'"C:\Windows\system32\rundll32.exe" "C:\Users\u\AppData\Local\Temp\x\Game_Data\Managed\System.Runtime.dll",#1',
+                               r'C:\Windows\SysWOW64\7za.exe x -pinfected -y -o"C:\Users\u\AppData\Local\Temp\x" Game.zip'],
+        # unpacking the zip writes the game's own exe, which then starts
+        "files_written": [r"C:\Users\u\AppData\Local\Temp\x\Game.exe"],
+        "processes_created": [r'"C:\Users\u\AppData\Local\Temp\x\Game.exe"'],
+        "signature_matches": [
+            {"name": "antivm_display", "severity": "IMPACT_SEVERITY_MEDIUM",
+             "description": "Attempts to query display device information, possibly to determine if virtualized"},
+            {"name": "injection_rwx", "severity": "IMPACT_SEVERITY_LOW", "description": "Creates RWX memory"},
+            {"id": "116", "severity": "IMPACT_SEVERITY_INFO", "description": "Found dropped PE file which has not been started"}],
+        "mitre_attack_techniques": [{"id": "T1082", "severity": "IMPACT_SEVERITY_INFO",
+                                     "signature_description": "Checks available memory"}],
+    }
+    assert _texts_and_findings(summary, {"system.runtime.dll", "game.exe", "game.zip"}) == set()
+
+
+def test_real_malicious_behaviour_is_still_caught():
+    summary = {
+        "command_executions": [r'powershell -w hidden -enc AAAA',
+                               r'"C:\Windows\system32\rundll32.exe" "C:\Users\u\AppData\Roaming\evil.dll",#1'],
+        "files_written": [r"C:\Users\u\AppData\Roaming\upd\svc.exe"],
+        "processes_created": [r'"C:\Users\u\AppData\Roaming\upd\svc.exe" --hidden'],
+        "files_opened": [r"C:\Users\u\AppData\Local\Google\Chrome\User Data\Default\Login Data"],
+        "http_conversations": [{"url": "https://discord.com/api/webhooks/1/abc"}],
+        "signature_matches": [{"name": "antivm_vbox_keys", "severity": "IMPACT_SEVERITY_HIGH",
+                               "description": "Detects VirtualBox through the presence of registry keys"}],
+    }
+    got = _texts_and_findings(summary, {"game.exe"})
+    assert {"detonation.shell", "detonation.dropper", "detonation.browser_data", "detonation.exfil",
+            "detonation.anti_vm"} <= got
+
+
+def test_one_sandbox_malware_label_is_high_and_corroborated_is_critical():
+    from jamtriage.models import Severity
+    one = {"malicious": 1, "sandbox_verdicts": [{"category": "malicious", "sandbox": "CAPE", "names": ["X"]}]}
+    assert [f.severity for f in vtsandbox._verdict_findings(one)] == [Severity.HIGH]
+    two_boxes = {"malicious": 0, "sandbox_verdicts": [{"category": "malicious", "sandbox": "CAPE", "names": ["X"]},
+                                                      {"category": "malicious", "sandbox": "Zenbox", "names": []}]}
+    assert {f.severity for f in vtsandbox._verdict_findings(two_boxes)} == {Severity.CRITICAL}
+    av_agrees = {"malicious": 5, "sandbox_verdicts": [{"category": "malicious", "sandbox": "CAPE", "names": ["X"]}]}
+    assert [f.severity for f in vtsandbox._verdict_findings(av_agrees)] == [Severity.CRITICAL]
+
+
+def test_memory_yara_engine_noise_ignored_but_other_rules_kept():
+    def sig(*rules):
+        return {"signature_matches": [{"name": "procmem_yara", "severity": "IMPACT_SEVERITY_MEDIUM",
+                                       "description": "Yara detections observed in process dumps, payloads or dropped files",
+                                       "match_data": [f"Yara rule '{r}' with data '['{{ CA FE BA BE }}']'" for r in rules]}]}
+    assert _texts_and_findings(sig("embedded_macho", "vmdetect")) == set()
+    assert _texts_and_findings(sig("embedded_macho", "Stealer_payload")) == {"detonation.memory_yara"}
 
 
 def test_same_finding_in_two_copies_of_a_godot_pack_counts_once():

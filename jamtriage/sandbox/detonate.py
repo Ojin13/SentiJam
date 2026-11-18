@@ -30,6 +30,7 @@ EXFIL_RX = re.compile(r"discord(app)?\.com/api/webhooks|api\.telegram\.org|paste
 SHELL_RX = re.compile(r"\b(powershell|pwsh|cmd\.exe|wscript|cscript|mshta|rundll32|regsvr32)\b", re.I)
 AUTOSTART_RX = re.compile(r"currentversion\\run|\\start menu\\programs\\startup|schtasks|scheduled task", re.I)
 VM_RX = re.compile(r"virtual ?machine|vmware|virtualbox|vbox|sandbox|anti-?vm|debugger|anti-?debug", re.I)
+MEMORY_YARA_RX = re.compile(r"yara rule matched in memory", re.I)
 DROP_RX = re.compile(r"drops? (and runs|executable)|dropped|executes dropped|creates? .*\.exe", re.I)
 
 
@@ -137,6 +138,7 @@ def map_behaviour(texts: list[str], score: float | None, families: list[str], so
                                  (SHELL_RX, "shell", Severity.HIGH, "starts a shell or script host"),
                                  (AUTOSTART_RX, "autostart", Severity.HIGH, "writes autostart entries"),
                                  (DROP_RX, "dropper", Severity.HIGH, "drops and runs another executable"),
+                                 (MEMORY_YARA_RX, "memory_yara", Severity.HIGH, "a YARA rule matched in process memory"),
                                  (VM_RX, "anti_vm", Severity.MEDIUM, "checks for virtual machines or debuggers")):
         m = rx.search(blob)
         if m:
@@ -147,13 +149,77 @@ def map_behaviour(texts: list[str], score: float | None, families: list[str], so
     return out
 
 
-def _vt_behaviour_texts(summary: dict) -> list[str]:
+# Sandbox signatures every game triggers (it asks for its GPU and free memory): not evidence of anything.
+# (unbacked_delay_execution: JIT engines such as Unity's Mono run code from allocated memory.)
+BENIGN_VT_SIGNATURES = {"antivm_display", "antivm_checks_available_memory", "unbacked_delay_execution"}
+# YARA rules the sandboxes run on memory dumps that match plain game engines: Mach-O/Java magic bytes in
+# Godot and Unity, and generic CPUID/"VMware" patterns (engines detect the VMware GPU driver).
+BENIGN_MEMORY_YARA = {"embedded_macho", "vmdetect"}
+YARA_RULE_RX = re.compile(r"Yara rule '([^']+)'")
+BENIGN_VT_DESCRIPTIONS = re.compile(r"display device information|checks available memory|reference anti-vm strings", re.I)
+# VirusTotal's own helpers when it unpacks an uploaded archive or a process crashes.
+SANDBOX_TOOL_RX = re.compile(r"\\(unarchiver|7za|werfault)\.exe", re.I)
+RUNDLL_RX = re.compile(r'rundll32(?:\.exe)?"?\s+"?([^",]+?\.dll)', re.I)
+
+
+def _basename(path: str) -> str:
+    return re.split(r"[\\/]", path.strip().strip('"'))[-1].lower()
+
+
+def _exe_of(cmd: str) -> str:
+    cmd = cmd.strip()
+    return cmd[1:].split('"', 1)[0] if cmd.startswith('"') else cmd.split(" ", 1)[0]
+
+
+def _dropped_and_run(summary: dict, own: set[str]) -> list[str]:
+    """Executables written during the run and then started, other than the game's own files."""
+    written = set()
+    for k in ("files_written", "files_dropped"):
+        for item in summary.get(k) or []:
+            written.add(_basename(item.get("path", "") if isinstance(item, dict) else str(item)))
+    hits = []
+    for k in ("processes_created", "command_executions"):
+        for item in summary.get(k) or []:
+            exe = _exe_of(str(item))
+            name = _basename(exe)
+            if name.endswith(".exe") and name in written and name not in own and "\\windows\\" not in exe.lower():
+                hits.append(exe)
+    return sorted(set(hits))
+
+
+def _vt_behaviour_texts(summary: dict, own_files: set[str] | frozenset = frozenset()) -> list[str]:
+    """The parts of a VirusTotal behaviour summary worth matching, minus what every game or the sandbox
+    itself produces. own_files: basenames of the entry's files (an uploaded zip's DLLs get test-loaded
+    with rundll32 by VirusTotal, and unpacking it writes the game's own exe)."""
+    own = {n.lower() for n in own_files}
     texts = []
-    for k in ("processes_created", "command_executions", "files_opened", "files_written", "files_dropped",
-              "registry_keys_set", "dns_lookups", "ip_traffic", "http_conversations", "mitre_attack_techniques",
-              "signature_matches"):
+    for k in ("processes_created", "command_executions"):
+        for item in summary.get(k) or []:
+            line = str(item)
+            m = RUNDLL_RX.search(line)
+            if (m and _basename(m.group(1)) in own) or SANDBOX_TOOL_RX.search(line):
+                continue
+            texts.append(line)
+    for k in ("files_opened", "files_written", "registry_keys_set", "dns_lookups", "ip_traffic", "http_conversations"):
         for item in summary.get(k) or []:
             texts.append(json.dumps(item) if isinstance(item, dict) else str(item))
+    # (mitre_attack_techniques is derived from these same signatures, so it isn't read separately)
+    for k in ("signature_matches",):
+        for item in summary.get(k) or []:
+            if not isinstance(item, dict):
+                continue
+            if not any(x in str(item.get("severity", "")) for x in ("MEDIUM", "HIGH", "CRITICAL")):
+                continue                                    # info/low notes: every program triggers some
+            name = str(item.get("name") or item.get("id") or "")
+            desc = str(item.get("description") or item.get("signature_description") or "")
+            if name in BENIGN_VT_SIGNATURES or BENIGN_VT_DESCRIPTIONS.search(desc):
+                continue
+            if name in ("procmem_yara", "binary_yara"):     # report the rules, not the generic description
+                rules = {r for d in item.get("match_data") or [] for r in YARA_RULE_RX.findall(str(d))}
+                texts += [f"yara rule matched in memory: {r}" for r in sorted(rules - BENIGN_MEMORY_YARA)]
+                continue
+            texts.append(f"{name}: {desc}")
+    texts += [f"drops and runs {p}" for p in _dropped_and_run(summary, own)]
     return texts
 
 

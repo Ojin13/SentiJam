@@ -114,7 +114,15 @@ def cmd_sandbox(args) -> int:
         for p in [p for p in providers if p not in ready]:
             console.print(f"[yellow]{p}: API key not set; skipped.[/]")
         providers = [p for p in providers if p in ready]
-    return vtsandbox.run(cfg, console, args.action, providers, args.entry, force=args.force)
+    only = args.entry
+    if args.verdict:
+        picked = vtsandbox.slugs_with_verdict(cfg, args.verdict)
+        only = [s for s in picked if not args.entry or s in args.entry]
+        if not only:     # an empty list must not fall through to "every entry"
+            console.print(f"No analysed entry has verdict {', '.join(args.verdict)}; nothing to do.")
+            return 0
+        console.print(f"Entries with verdict {', '.join(args.verdict)}: {', '.join(only)}")
+    return vtsandbox.run(cfg, console, args.action, providers, only, force=args.force)
 
 
 def cmd_detonate(args) -> int:
@@ -205,9 +213,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("sandbox", help="batch: run consenting entries through the VirusTotal and Hybrid "
                                        "Analysis sandboxes (public)")
-    s.add_argument("action", choices=["plan", "upload", "collect", "status"],
-                   help="plan = dry run with request estimate; upload; collect = fetch results later; status")
+    s.add_argument("action", choices=["plan", "upload", "collect", "rescore", "status"],
+                   help="plan = dry run with request estimate; upload; collect = fetch results later; "
+                        "rescore = re-apply the rules to collected reports (no requests); status")
     s.add_argument("--entry", action="append", help="only this entry slug (repeatable)")
+    s.add_argument("--verdict", action="append", choices=["review", "disqualify", "sandbox-ok", "web"],
+                   help="only entries with this static verdict (repeatable), e.g. --verdict review")
     s.add_argument("--force", action="store_true", help="collect: fetch again even if already collected")
     s.add_argument("--provider", choices=["all", "virustotal", "hybrid"], default="all",
                    help="which sandbox (default: both)")
