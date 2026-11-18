@@ -21,7 +21,12 @@ languages:
       noisy: true
       severity: high
       title: OS.shell_open with a non-web target
-      pattern: '\bOS\.shell_open\s*\(\s*(?!["''](https?://|mailto:))'
+      pattern: '\bOS\.shell_open\s*\(\s*["''](?!https?://|mailto:)'
+    - id: shell-open-computed
+      noisy: true
+      severity: medium
+      title: OS.shell_open with a computed target (usually a clickable link)
+      pattern: '\bOS\.shell_open\s*\(\s*(?!["''])'
     - id: env-appdata
       severity: high
       title: Reads Windows user-data folders from the environment

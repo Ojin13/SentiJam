@@ -274,7 +274,8 @@ def unpack_zip(archive: Path, dest: Path, budget: Budget, label: str) -> UnpackR
                 traversal.append(info.filename)
             elif mode == stat.S_IFLNK:
                 links.append(info.filename)
-            elif not info.is_dir() and not (info.flag_bits & 0x1):
+            elif not (info.is_dir() or info.filename.endswith("\\")) and not (info.flag_bits & 0x1):
+                # Some Windows tools write "\\" as the separator, so "Data\\Plugins\\" is a folder entry too.
                 todo.append((info, rel))
         _blocked(result, label, traversal, "traversal")
         _blocked(result, label, links, "link")
@@ -293,11 +294,15 @@ def unpack_zip(archive: Path, dest: Path, budget: Budget, label: str) -> UnpackR
             if info.file_size > budget.bytes_left():
                 _limit(result, budget, label, f"total size limit {lim.max_total_bytes} bytes reached at {rel!r}")
                 break
-            target = _safe_target(dest, rel)
-            if target is None:
-                _blocked(result, label, [info.filename], "traversal")
+            try:
+                target = _safe_target(dest, rel)
+                if target is None:
+                    _blocked(result, label, [info.filename], "traversal")
+                    continue
+                target, clash = _free_target(target)
+            except OSError as exc:      # e.g. a member's folder exists as a file: skip that member, not the archive
+                _unextracted(result, label, rel, f"{type(exc).__name__}: {exc}")
                 continue
-            target, clash = _free_target(target)
             if clash:
                 collided.append(info.filename)
             try:

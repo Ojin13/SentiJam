@@ -165,3 +165,20 @@ def test_hashes(tmp_path):
     h = hash_file(p)
     assert h["sha256"] == EICAR_SHA256
     assert h["md5"] == "44d88612fea8a8f36de82e1278abb02f"
+
+
+def test_zip_with_backslash_folder_entries_is_fully_extracted(tmp_path):
+    """Windows tools that write '\\' separators and 'Folder\\' entries (seen in a real jam upload)."""
+    import zipfile as _zf
+
+    from jamtriage.unpack import Budget, Limits, unpack_zip
+    arc = tmp_path / "game.zip"
+    with _zf.ZipFile(arc, "w") as z:
+        z.writestr("Game_Data\\Plugins\\", b"")
+        z.writestr("Game_Data\\Plugins\\x86_64\\", b"")
+        z.writestr("Game_Data\\Plugins\\x86_64\\lib_burst_generated.dll", b"MZ" + b"\0" * 100)
+        z.writestr("Game.exe", b"MZ" + b"\0" * 100)
+    res = unpack_zip(arc, tmp_path / "out", Budget(Limits()), "game.zip")
+    got = sorted(p.relative_to(tmp_path / "out").as_posix() for p in res.extracted)
+    assert not res.error and got == ["Game.exe", "Game_Data/Plugins/x86_64/lib_burst_generated.dll"]
+    assert (tmp_path / "out" / "Game_Data" / "Plugins").is_dir()

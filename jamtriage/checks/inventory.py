@@ -44,6 +44,8 @@ def page_checks(ctx: EntryContext, entry: Entry, files: list) -> None:
         low = url.lower()
         if any(d in low for d in ("itch.io", "itch.zone")):
             continue
+        if re.search(r"docs\.google\.com/(document|spreadsheets|presentation|forms)/", low):
+            continue      # a Google Doc/Sheet/Slides/Form page (credits, design doc), not a file download
         if _FILE_LINK_RE.search(low.split("?")[0]) or any(re.search(h, low) for h in FILE_HOSTS):
             ctx.add(Finding(rule="page.download_link", severity=Severity.HIGH,
                             title="Game page links to a download outside itch.io", file="metadata.json",

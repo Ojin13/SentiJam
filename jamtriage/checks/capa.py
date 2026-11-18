@@ -23,7 +23,11 @@ HIGH_WORDS = ("credential", "password", "browser", "cookie", "keylog", "steal", 
 # the C runtime's weekday table ("Friday" matches /frida/), and a "Dash" move or ability (also a cryptocurrency).
 # Matches inside data appended to the exe (compressed payloads, where random bytes spell "XENO" or "vBOx") are
 # noise too. When nothing else is left the capability drops to Low, with the matched text shown.
-BENIGN_STRINGS = {"friday", "dash"}
+BENIGN_STRINGS = {"friday", "dash", "idat"}     # weekday, a game move, the PNG image-data chunk ("IDA" debugger rule)
+# Words that contain a tool name but are ordinary identifiers: Godot's VBoxContainer UI class (VirtualBox rule),
+# "cutter"/"machine_cutter" (the Cutter disassembler). Real checks look for e.g. "VBoxService.exe" or "cutter.exe".
+BENIGN_PATTERNS = (re.compile(r"(^|/)[hv]boxcontainer|^get_?[hv]box$", re.I),
+                   re.compile(r"^[a-z_]*cutters?[a-z_]*$", re.I))
 LIST_NAMESPACES = ("host-interaction/process/create", "communication/http", "communication/socket",
                    "anti-analysis/", "load-code/", "host-interaction/registry", "executable/installer")
 
@@ -90,7 +94,8 @@ def string_noise(cap: dict, overlay_offset: int | None) -> tuple[bool, str]:
     real, shown = [], []
     for text, offs in cap["evidence"]:
         in_payload = bool(offs) and overlay_offset is not None and all(o >= overlay_offset for o in offs)
-        harmless = text.strip().lower() in BENIGN_STRINGS
+        low = text.strip().lower()
+        harmless = low in BENIGN_STRINGS or any(p.search(low) for p in BENIGN_PATTERNS)
         shown.append(f"'{text[:24]}'" + (" (in appended data)" if in_payload else " (harmless word)" if harmless
                                            else ""))
         if not (in_payload or harmless):

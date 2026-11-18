@@ -170,6 +170,8 @@ helper_executables:
   - dxwebsetup.exe
   - vc_redist.x64.exe
   - vc_redist.x86.exe
+  - vc_redist.arm64.exe
+  - createdump.exe            # .NET runtime crash-dump tool (Godot C# and other .NET exports)
   - CrashReportClient.exe
   - UE4PrereqSetup_x64.exe
   - UEPrereqSetup_x64.exe

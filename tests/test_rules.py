@@ -60,7 +60,8 @@ def test_code_rules_per_language():
                    cr.languages["csharp"] + cr.shared)
     assert {"process-start", "protected-data-unprotect"} <= set(cs)
     gd = scan_text('OS.shell_open("https://itch.io")\nOS.shell_open(path)', cr.languages["gdscript"])
-    assert gd["shell-open-nonweb"][1] == 2   # web link on line 1 is fine, line 2 is flagged
+    assert "shell-open-nonweb" not in gd and gd["shell-open-computed"][1] == 2   # line 1 web link is fine;
+    # line 2's target is a variable: flagged, but only Medium (it's usually a clickable link)
     py = scan_text("subprocess\nPopen\nbrowser_cookie3", cr.languages["python"], use_pyc=True)
     assert {"subprocess", "browser-cookie3"} <= set(py)
     js = scan_text('const cp = require("node:child_process")', cr.languages["javascript"])
@@ -251,3 +252,28 @@ def test_capa_string_rules_ignore_harmless_words_and_packed_data():
     assert not string_noise(xen, overlay_offset=None)[0]                  # no overlay: a real match
     real, shown = string_noise(caps["reference analysis tools strings 2"], None)
     assert not real and "'x64dbg.exe'" in shown                         # a real tool name keeps the finding
+
+
+def test_capa_noise_from_real_jam_entries():
+    from jamtriage.checks.capa import string_noise
+
+    def cap(name, *texts):
+        return {"name": name, "namespace": "anti-analysis", "evidence": [(t, [100]) for t in texts]}
+    # Godot UI classes, a PNG chunk name, game identifiers: harmless.
+    assert string_noise(cap("reference anti-VM strings targeting VirtualBox", "VBoxContainer", "GetVBox", "get_vbox",
+                            "MarginContainer/VBoxContainer/Button"), None)[0]
+    assert string_noise(cap("reference analysis tools strings", "IDAT"), None)[0]
+    assert string_noise(cap("reference analysis tools strings", "Cutter", "machine_cutter", "Cutters"), None)[0]
+    # Real artifacts still count.
+    assert not string_noise(cap("reference anti-VM strings targeting VirtualBox", "VBoxService.exe"), None)[0]
+    assert not string_noise(cap("reference anti-VM strings targeting VirtualBox", "VirtualBox"), None)[0]
+    assert not string_noise(cap("reference analysis tools strings", "cutter.exe"), None)[0]
+
+
+def test_godot_shell_open_literal_vs_computed(tmp_path):
+    rules = {r.id: r for r in code_rules(RULES).languages["gdscript"]}
+    hi, med = rules["shell-open-nonweb"].regex, rules["shell-open-computed"].regex
+    assert hi.search('OS.shell_open("C:/Windows/System32/cmd.exe")') and not med.search('OS.shell_open("cmd.exe")')
+    assert not hi.search('OS.shell_open("https://example.com")')
+    assert med.search("label.meta_clicked.connect(func(meta): OS.shell_open(str(meta)))")
+    assert not hi.search("OS.shell_open(str(meta))")
