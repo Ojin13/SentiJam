@@ -15,6 +15,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 
@@ -54,6 +55,20 @@ def _kill_group(p: subprocess.Popen) -> None:
         pass
 
 
+# Set when the user interrupts a run (Ctrl+C). Worker threads can't receive the signal themselves, so every
+# running tool polls this and stops within ~2 s; pipeline stages check it too.
+STOP = threading.Event()
+
+
+class Stopped(Exception):
+    """The run was interrupted; whatever was in progress is abandoned (and not saved)."""
+
+
+def check_stop() -> None:
+    if STOP.is_set():
+        raise Stopped("run interrupted")
+
+
 def run_group(cmd: list[str], timeout: float | None = None, *, capture_output: bool = True, text: bool = True,
               errors: str = "replace", cwd=None, stdin=subprocess.DEVNULL,
               max_mb: int | None = None) -> subprocess.CompletedProcess:
@@ -69,21 +84,23 @@ def run_group(cmd: list[str], timeout: float | None = None, *, capture_output: b
         kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         kw["start_new_session"] = True
+    check_stop()
     p = subprocess.Popen(cmd, **kw)
     watch = bool(max_mb) and sys.platform != "win32"
     deadline = None if timeout is None else time.monotonic() + timeout
     try:
         while True:
-            step = 2.0 if watch else None
+            step = 2.0                              # poll: memory ceiling and the stop flag
             if deadline is not None:
                 left = deadline - time.monotonic()
                 if left <= 0:
                     raise subprocess.TimeoutExpired(cmd, timeout)
-                step = min(step, left) if step else left
+                step = min(step, left)
             try:
                 out, err = p.communicate(timeout=step)
                 break
             except subprocess.TimeoutExpired:
+                check_stop()
                 if watch:
                     used = group_rss_mb(p.pid)
                     if used > max_mb:

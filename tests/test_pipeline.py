@@ -441,6 +441,33 @@ def test_dashboard_lookup_column_says_off_without_services(cfg):
     assert entry_layers(cfg, "clean-game")["lookups"]["state"] == "off"
 
 
+
+
+def test_stop_flag_kills_running_tool_and_saves_nothing(cfg, tmp_path):
+    import threading
+    import time as _time
+
+    from jamtriage import proc
+    proc.STOP.clear()
+    t0 = _time.monotonic()
+    threading.Timer(0.5, proc.STOP.set).start()
+    with pytest.raises(proc.Stopped):
+        proc.run_group(["sleep", "30"])                       # no timeout, no memory ceiling: still stops
+    assert _time.monotonic() - t0 < 5
+    # An entry interrupted mid-analysis leaves no saved result behind.
+    proc.STOP.clear()
+    d = cfg.builds_dir / "g"
+    d.mkdir(parents=True)
+    (d / "game.zip").write_bytes(zip_bytes({"readme.txt": b"hi"}))
+    pipe = Pipeline(cfg)
+    entry = discover_entries(cfg.builds_dir)[0]
+    proc.STOP.set()
+    with pytest.raises(proc.Stopped):
+        pipe._analyze_entry_safe(entry, 1, 1, force=True)       # STOP is still set
+    assert not local_path(cfg, "g").exists()
+    proc.STOP.clear()
+
+
 def test_clamav_progress_counts_scanned_files(cfg, tmp_path, monkeypatch):
     from jamtriage.checks import antivirus
     monkeypatch.setattr(antivirus, "CLAMAV_PROGRESS_INTERVAL", 0.05)

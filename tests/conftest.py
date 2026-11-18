@@ -10,6 +10,14 @@ from jamtriage.config import DEFAULTS, Config
 ROOT = Path(__file__).resolve().parent.parent
 
 
+@pytest.fixture(autouse=True)
+def _clear_stop_flag():
+    from jamtriage import proc
+    proc.STOP.clear()
+    yield
+    proc.STOP.clear()
+
+
 @pytest.fixture
 def cfg(tmp_path: Path) -> Config:
     raw = copy.deepcopy(DEFAULTS)

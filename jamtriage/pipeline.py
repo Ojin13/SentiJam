@@ -14,6 +14,7 @@ from typing import Callable
 
 from rich.console import Console
 
+from . import proc
 from .checks import EntryContext, antivirus, capa, code, diec, engine, pe, strings, unwrap, web, yara_scan
 from .checks.inventory import file_flags, hash_all, inventory, unpack
 from .config import Config
@@ -181,10 +182,13 @@ class Pipeline:
         self.state.set_meta("current", {**cur, "active": [{"entry": e, "stage": s} for e, s in active.items()]})
 
     def _stage(self, ctx: EntryContext, name: str, fn: Callable, *args) -> None:
+        proc.check_stop()                       # interrupted: abandon this entry, nothing is saved
         self.state.upsert_entry(ctx.slug, stage=name, status="in_progress")
         self._set_active(ctx.slug, name)
         try:
             fn(*args)
+        except proc.Stopped:
+            raise
         except Exception as exc:  # noqa: BLE001  one broken file must not stop the run
             ctx.error(name, f"{type(exc).__name__}: {exc}")
             self.log(f"{name} failed: {exc}", ctx.slug)
@@ -386,6 +390,7 @@ class Pipeline:
         cfg = self.cfg
         acfg = cfg.section("analysis")
         workers = max(1, int(workers or acfg.get("workers", 3) or 1))
+        proc.STOP.clear()
         capa.set_parallel_capa(int(acfg.get("max_parallel_capa", 2) or 1))
         if show_tools:
             print_tool_table(self.tools, cfg.platform, self.console)
@@ -432,7 +437,8 @@ class Pipeline:
                         self.state.set_meta("run", run_meta)
                         self.score(entry.slug, local, provisional=True)   # while ClamAV batch / lookups continue
                 except BaseException:
-                    for f in futures:      # Ctrl+C: don't start queued entries; running tools are killed by run_tool
+                    proc.STOP.set()        # Ctrl+C: running tools stop within ~2 s, half-done entries aren't saved
+                    for f in futures:
                         f.cancel()
                     raise
             locals_ = {e.slug: locals_[e.slug] for e in entries if e.slug in locals_}   # keep the entry order
@@ -461,6 +467,7 @@ class Pipeline:
             final_state = "failed"
             raise
         finally:
+            proc.STOP.clear()                  # workers have finished by now; later runs in this process start clean
             if final_state != "done" or not wait_for_lookups:
                 manager.stop()
             if final_state != "done":
@@ -514,6 +521,8 @@ class Pipeline:
     def _analyze_entry_safe(self, entry: Entry, i: int, n: int, force: bool) -> tuple[dict, bool]:
         try:
             return self._analyze_entry(entry, i, n, force)
+        except proc.Stopped:
+            raise
         except Exception as exc:  # noqa: BLE001  one broken entry must not stop the run
             self.console.print(f"[red]{entry.slug}: could not analyse: {exc}[/]")
             self.log(f"could not analyse: {exc}", entry.slug)
@@ -541,6 +550,7 @@ class Pipeline:
         self.log("analysing", entry.slug)
         partial = bool(prev and cfg.only and self._partial_ok(entry, prev))
         ctx = self.run_local(entry, prev)
+        proc.check_stop()                       # never save an entry whose checks were cut short
         ctx.info["_layout"] = layout(entry)
         # A partial rerun keeps the earlier fingerprint: the other checks' results are still the old ones.
         local = _ctx_to_dict(ctx, entry, prev["fingerprint"] if partial else fp)
